@@ -1,0 +1,19 @@
+{
+  "schemaVersion": 2,
+  "runtime": "script",
+  "entryPoint": "plugin.js",
+  "id": "com.nora.github",
+  "name": "GitHub",
+  "version": "0.1.0",
+  "summary": "Connect your GitHub account and browse your repositories, issues, and pull requests in a native Nora panel.",
+  "publisher": "Nora",
+  "apiVersion": 1,
+  "permissions": ["network", "credentials", "openExternal"],
+  "networkDomains": ["api.github.com", "github.com"],
+  "panels": [{"id": "com.nora.github.panel", "title": "GitHub", "systemImage": "chevron.left.forwardslash.chevron.right"}],
+  "commands": [
+    {"id": "com.nora.github.listRepositories", "title": "List GitHub Repositories", "description": "List one page of repositories accessible to the user's connected GitHub account.", "inputSchemaJSON": "{\"type\":\"object\",\"properties\":{\"page\":{\"type\":\"integer\",\"minimum\":1}}}", "readOnly": true},
+    {"id": "com.nora.github.listIssues", "title": "List GitHub Issues", "description": "List issues for an authorized owner/name repository, excluding pull requests.", "inputSchemaJSON": "{\"type\":\"object\",\"properties\":{\"repository\":{\"type\":\"string\"},\"state\":{\"enum\":[\"open\",\"closed\",\"all\"]},\"page\":{\"type\":\"integer\",\"minimum\":1}},\"required\":[\"repository\"]}", "readOnly": true},
+    {"id": "com.nora.github.listPullRequests", "title": "List GitHub Pull Requests", "description": "List pull requests for an authorized owner/name repository, including draft and merged state.", "inputSchemaJSON": "{\"type\":\"object\",\"properties\":{\"repository\":{\"type\":\"string\"},\"state\":{\"enum\":[\"open\",\"closed\",\"all\"]},\"page\":{\"type\":\"integer\",\"minimum\":1}},\"required\":[\"repository\"]}", "readOnly": true}
+  ]
+}

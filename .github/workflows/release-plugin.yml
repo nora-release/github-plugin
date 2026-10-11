@@ -1,0 +1,70 @@
+name: Release Nora script plugin
+
+on:
+  push:
+    tags: ['v*']
+
+permissions:
+  contents: read
+
+concurrency:
+  group: script-plugin-release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: write
+    steps:
+      - name: Checkout tagged plugin
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Set up Node
+        uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
+        with:
+          node-version: '24'
+      - name: Install pnpm
+        run: npm install --global pnpm@11.5.3 --ignore-scripts --no-audit --no-fund
+      - name: Install the shared plugin SDK
+        run: pnpm install --frozen-lockfile --ignore-scripts
+      - name: Verify the GitHub plugin
+        run: make test
+      - name: Require a reviewed commit and an unused release tag
+        env:
+          GH_TOKEN: ${{ github.token }}
+          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          git merge-base --is-ancestor "$GITHUB_SHA" "origin/$DEFAULT_BRANCH"
+          if gh release view "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            printf 'This tag already has a release; use a new version.\n' >&2
+            exit 1
+          fi
+      - name: Package plugin code and resources
+        run: make package PLUGIN_TAG="$GITHUB_REF_NAME"
+      - name: Prepare release catalog and checksums
+        shell: bash
+        run: |
+          set -euo pipefail
+          plugin_archives=(dist/*.zip)
+          [[ ${#plugin_archives[@]} == 1 && -f "${plugin_archives[0]}" ]]
+          node node_modules/@nora/plugin-kit/scripts/plugin-marketplace.mjs release-entry --manifest nora-plugin.json --archive "${plugin_archives[0]}" \
+            --repository "https://github.com/$GITHUB_REPOSITORY" --tag "$GITHUB_REF_NAME" --output dist
+      - name: Publish versioned plugin assets
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          gh release create "$GITHUB_REF_NAME" dist/* --repo "$GITHUB_REPOSITORY" --verify-tag \
+            --draft --title "$GITHUB_REF_NAME" --notes 'Nora plugin code and resources.'
+          if [[ "${GITHUB_REF_NAME%%+*}" == *-* ]]; then
+            gh release edit "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" --draft=false --prerelease --latest=false
+          else
+            gh release edit "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" --draft=false --latest
+          fi

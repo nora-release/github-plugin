@@ -1,0 +1,6 @@
+{
+  "schemaVersion": 1,
+  "runtime": "script",
+  "manifestPath": "nora-plugin.json",
+  "resources": []
+}
