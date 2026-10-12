@@ -5,11 +5,11 @@
   "id": "com.nora.github",
   "name": "GitHub",
   "iconPath": "assets/github.svg",
-  "version": "0.1.1",
+  "version": "0.2.0",
   "summary": "Connect your GitHub account and browse your repositories, issues, and pull requests in a native Nora panel.",
   "publisher": "Nora",
   "apiVersion": 1,
-  "permissions": ["network", "credentials", "openExternal"],
+  "permissions": ["network", "credentials", "openExternal", "chat"],
   "networkDomains": ["api.github.com", "github.com"],
   "panels": [{"id": "com.nora.github.panel", "title": "GitHub", "systemImage": "chevron.left.forwardslash.chevron.right"}],
   "commands": [

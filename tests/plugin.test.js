@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import { randomUUID } from 'node:crypto';
 import fs from 'node:fs/promises';
 import vm from 'node:vm';
 import test from 'node:test';
@@ -11,29 +12,47 @@ const body = (data, status = 200, headers = {}) => ({ status, headers, bodyText:
 const repo = (name = 'alice/project', id = 1) => ({ id, full_name: name, private: true });
 const issue = (number, title, extra = {}) => ({ id: number, number, title, body: 'Description', state: 'open', user: { login: 'alice' }, html_url: `https://github.com/alice/project/issues/${number}`, ...extra });
 const nodes = view => [view, ...(view.children || []).flatMap(nodes), ...(view.items || []).flatMap(nodes)];
-const texts = view => nodes(view).map(node => node.text || '').join('\n');
+const texts = view => nodes(view).flatMap(node => [node.text, node.subtitle].filter(Boolean)).join('\n');
 function fixture({ saved = null, locale = 'en', now = () => Date.now(), beforeSave = async () => {}, route = async url => {
   if (url.pathname === '/user') return body({ login: 'alice' });
   if (url.pathname === '/user/repos') return body([repo()]);
   return body([issue(1, 'Issue one')]);
 } } = {}) {
   let stored = saved;
-  const requests = [], writes = [], links = [];
+  const actionCapabilities = new Set();
+  const requests = [], writes = [], links = [], drafts = [];
   const request = async (method, args) => {
     if (method === 'credentials.get') return stored;
     if (method === 'credentials.set') { await beforeSave(args.value); stored = args.value; writes.push(stored); return null; }
     if (method === 'credentials.delete') { stored = null; return null; }
     if (method === 'browser.open') { links.push(args.url); return true; }
+    if (method === 'chat.openDraft') {
+      if (!actionCapabilities.has(args.actionCapability)) throw new Error('The draft action scope expired.');
+      const { actionCapability, ...draft } = args;
+      drafts.push(draft);
+      return true;
+    }
     if (method === 'network.request') { requests.push(args); return route(new URL(args.url), args); }
     throw new Error(`Unexpected method: ${method}`);
   };
   class ClockDate extends Date { static now() { return now(); } }
   const context = vm.createContext({ request, locale, Date: ClockDate });
   vm.runInContext(`${sdk}\nglobalThis.api = createNoraPluginAPI(request, locale);\n${plugin}`, context);
+  const render = async (event = {}) => {
+    const actionCapability = typeof event.action === 'string' && event.action.trim() ? randomUUID() : undefined;
+    if (actionCapability) actionCapabilities.add(actionCapability);
+    try {
+      return await context.api.invokePanel('com.nora.github.panel', { ...event, actionCapability });
+    } finally {
+      if (actionCapability) actionCapabilities.delete(actionCapability);
+    }
+  };
   return {
-    render: event => context.api.invokePanel('com.nora.github.panel', event),
+    render,
+    renderUnscoped: event => context.api.invokePanel('com.nora.github.panel', event),
+    requestDraft: (draft, event) => context.nora.chat.openDraft(draft, event),
     command: (id, args = {}) => context.api.invokeCommand(`com.nora.github.${id}`, args),
-    requests, writes, links, stored: () => stored,
+    requests, writes, links, drafts, stored: () => stored,
   };
 }
 const connection = { token: 'test_token' };
@@ -43,12 +62,17 @@ test('Script manifest has no native extension or signing identity', async () => 
   assert.equal(manifest.entryPoint, 'plugin.js');
   assert.equal(manifest.extensionBundleIdentifier, undefined);
   assert.equal(manifest.teamIdentifier, undefined);
+  assert.ok(manifest.permissions.includes('chat'));
 });
 test('Disconnected native view describes the user account and never exposes App setup', async () => {
   const f = fixture();
   const view = await f.render({});
   assert.match(texts(view), /your own account/);
-  assert.ok(nodes(view).some(node => node.type === 'secureField'));
+  assert.equal(view.type, 'emptyState');
+  assert.ok(nodes(view).some(node => node.action === 'begin-login' && node.appearance === 'primary'));
+  assert.ok(!nodes(view).some(node => node.type === 'secureField'));
+  assert.ok(nodes(await f.render({ action: 'toggle-token' })).some(node => node.type === 'secureField'));
+  assert.ok(!nodes(await f.render({ action: 'toggle-token' })).some(node => node.type === 'secureField'));
   assert.doesNotMatch(texts(view), /Client ID|nora-release\/nora/);
   assert.equal(f.requests.length, 0);
   await f.render({ action: 'manage' });
@@ -66,7 +90,7 @@ test('Repos and Issues are read under the connected user credentials', async () 
   assert.match(texts(view), /alice/);
   assert.match(texts(view), /Issue one/);
   assert.ok(f.requests.every(request => request.headers.Authorization === 'Bearer test_token'));
-  assert.ok(nodes(view).find(node => node.id === 'repository').options.some(option => option.value === 'alice/project'));
+  assert.ok(nodes(view).find(node => node.id === 'repository-navigation').items.some(item => item.text === 'alice/project'));
 });
 test('Issues exclude PRs and the PR view exposes draft and merged states', async () => {
   const f = fixture({ saved: connection, route: async url => {
@@ -365,4 +389,406 @@ test('Oversized Unicode descriptions stay within native view limits and retain t
   assert.ok(nodes(detail).some(node => node.action === 'open-item'));
   await f.render({ action: 'open-item' });
   assert.deepEqual(f.links, ['https://github.com/alice/project/issues/1']);
+});
+
+test('A native workspace keeps list metadata compact and selected details in its inspector', async () => {
+  const f = fixture({ saved: connection, now: () => Date.parse('2026-10-12T00:00:00Z'), route: async url => {
+    if (url.pathname === '/user') return body({ login: 'alice' });
+    if (url.pathname === '/user/repos') return body([repo()]);
+    return body([issue(1, 'Fix the editor', { updated_at: '2026-10-10T10:00:00Z', labels: [{ name: 'bug' }], body: '## Details\nA real description.' })]);
+  } });
+  const initial = await f.render({});
+  assert.equal(initial.type, 'workspace');
+  assert.equal(initial.children[0].type, 'sidebar');
+  assert.equal(initial.children[0].value, 'repo-alice/project');
+  const viewNavigation = nodes(initial.children[0]).find(node => node.id === 'view-navigation');
+  assert.equal(viewNavigation.value, 'view-issues');
+  assert.deepEqual(Array.from(viewNavigation.items, item => item.action), ['kind:issues', 'kind:pulls']);
+  assert.equal(initial.children.length, 2);
+  const collection = nodes(initial).find(node => node.id === 'items');
+  assert.equal(collection.type, 'collection');
+  assert.equal(collection.action, 'peek-item');
+  const item = collection.items[0];
+  assert.equal(item.type, 'collectionItem');
+  assert.equal(item.text, 'Fix the editor');
+  assert.equal(item.subtitle, '#1');
+  assert.equal(item.tone, 'success');
+  assert.match(texts(item), /alice\nOct 10\nbug/);
+  const count = f.requests.length;
+  const selected = await f.render({ action: 'item:1', values: { items: 'item-1' } });
+  assert.equal(selected.children.length, 3);
+  assert.equal(selected.children[2].id, 'item-details');
+  assert.ok(nodes(selected.children[2]).some(node => node.type === 'markdown' && node.text.includes('A real description.')));
+  assert.ok(!nodes(selected.children[1]).some(node => node.type === 'markdown'));
+  const closed = await f.render({ action: 'close-detail', values: { 'github-workspace': '' } });
+  assert.equal(closed.children.length, 2);
+  assert.equal(nodes(closed).find(node => node.id === 'items').value, 'item-1');
+  assert.equal((await f.render({ action: 'peek-item', values: { items: 'item-1' } })).children.length, 3);
+  assert.equal((await f.render({ action: 'peek-item', values: { items: 'item-1' } })).children.length, 2);
+  assert.equal(f.requests.length, count);
+});
+
+test('Account and repository utilities stay in menus and manual repository entry is an explicit operation', async () => {
+  const f = fixture({ saved: connection });
+  const view = await f.render({});
+  assert.ok(!nodes(view).some(node => node.id === 'manual-repo' || node.type === 'secureField'));
+  const repositoryMenu = nodes(view).find(node => node.type === 'menu' && node.children.some(child => child.action === 'show-other-repo'));
+  assert.ok(repositoryMenu.children.some(child => child.action === 'show-other-repo'));
+  assert.ok(nodes(view).some(node => node.type === 'menu' && node.children.some(child => child.action === 'disconnect')));
+  const count = f.requests.length;
+  assert.ok(nodes(await f.render({ action: 'show-other-repo' })).some(node => node.id === 'manual-repo'));
+  assert.ok(!nodes(await f.render({ action: 'cancel-other-repo' })).some(node => node.id === 'manual-repo'));
+  assert.equal(f.requests.length, count);
+  await f.render({ action: 'show-other-repo' });
+  const invalid = await f.render({ action: 'open-repo', values: { 'manual-repo': '../private' } });
+  assert.match(texts(invalid), /owner\/name/);
+  assert.equal(f.requests.length, count);
+  const opened = await f.render({ action: 'open-repo', values: { 'manual-repo': 'bob/other' } });
+  assert.match(texts(opened), /bob\/other/);
+  assert.ok(!nodes(opened).some(node => node.id === 'manual-repo'));
+  assert.equal(new URL(f.requests.at(-1).url).pathname, '/repos/bob/other/issues');
+});
+
+test('Local author label and search filters never fetch data and hide details that leave the results', async () => {
+  const f = fixture({ saved: connection, route: async url => {
+    if (url.pathname === '/user') return body({ login: 'alice' });
+    if (url.pathname === '/user/repos') return body([repo()]);
+    return body([issue(1, 'Editor bug', { labels: [{ name: 'bug' }] }), issue(2, 'Design change', { user: { login: 'bob' }, labels: [{ name: 'design' }] })]);
+  } });
+  await f.render({});
+  await f.render({ action: 'item:1' });
+  const count = f.requests.length;
+  const author = await f.render({ action: 'author', values: { author: 'bob' } });
+  assert.equal(author.children.length, 2);
+  assert.deepEqual(Array.from(nodes(author).find(node => node.id === 'items').items, item => item.text), ['Design change']);
+  const empty = await f.render({ action: 'label', values: { label: 'bug' } });
+  assert.equal(nodes(empty).filter(node => node.type === 'emptyState').length, 1);
+  assert.match(texts(empty), /No matching loaded items|already loaded/);
+  const reset = await f.render({ action: 'clear-filters' });
+  assert.equal(nodes(reset).find(node => node.id === 'items').items.length, 2);
+  const query = await f.render({ action: 'query', values: { query: 'bob' } });
+  assert.equal(nodes(query).find(node => node.id === 'items').items.length, 1);
+  assert.equal(f.requests.length, count);
+});
+
+test('An empty GitHub view has one recovery state and changing API state retrieves real closed items', async () => {
+  const f = fixture({ saved: connection, route: async url => {
+    if (url.pathname === '/user') return body({ login: 'alice' });
+    if (url.pathname === '/user/repos') return body([repo()]);
+    return body(url.searchParams.get('state') === 'all' ? [issue(1, 'A closed issue', { state: 'closed' })] : []);
+  } });
+  const empty = await f.render({});
+  assert.equal(nodes(empty).filter(node => node.type === 'emptyState').length, 1);
+  assert.ok(nodes(empty).some(node => node.action === 'all-states'));
+  const all = await f.render({ action: 'all-states' });
+  assert.match(texts(all), /A closed issue/);
+  assert.equal(new URL(f.requests.at(-1).url).searchParams.get('state'), 'all');
+  const item = nodes(all).find(node => node.id === 'item-1');
+  assert.equal(item.symbol, 'checkmark.circle');
+  assert.ok(item.children.some(node => node.type === 'badge' && node.text === 'Closed'));
+});
+
+test('A stale repository failure cannot replace the newest repository or its selected details', async () => {
+  const started = deferred(), release = deferred();
+  const f = fixture({ saved: connection, route: async url => {
+    if (url.pathname === '/user') return body({ login: 'alice' });
+    if (url.pathname === '/user/repos') return body([repo('alice/first'), repo('alice/second', 2)]);
+    if (url.pathname.includes('/second/')) { started.resolve(); await release.promise; return body({}, 403); }
+    return body([issue(1, 'Current first repository', { body: 'Current details' })]);
+  } });
+  await f.render({});
+  const older = f.render({ action: 'repository', values: { repository: 'alice/second' } });
+  await started.promise;
+  await f.render({ action: 'repository', values: { repository: 'alice/first' } });
+  await f.render({ action: 'item:1' });
+  release.resolve();
+  const final = await older;
+  assert.equal(nodes(final).find(node => node.id === 'repository-navigation').value, 'repo-alice/first');
+  assert.match(texts(final.children[2]), /Current details/);
+  assert.doesNotMatch(texts(final), /denied|Couldn’t load/);
+});
+
+test('Fast Issues PR and state changes ignore late results and failures from the previous view', async () => {
+  const started = deferred(), release = deferred();
+  const f = fixture({ saved: connection, route: async url => {
+    if (url.pathname === '/user') return body({ login: 'alice' });
+    if (url.pathname === '/user/repos') return body([repo()]);
+    if (url.pathname.endsWith('/pulls') && url.searchParams.get('state') === 'open') {
+      started.resolve(); await release.promise; return body({}, 404);
+    }
+    return body([issue(1, url.pathname.endsWith('/pulls') ? 'Merged current PR' : 'Initial Issue', { merged_at: url.pathname.endsWith('/pulls') ? '2026-10-10T00:00:00Z' : null })]);
+  } });
+  await f.render({});
+  const earlier = f.render({ action: 'kind:pulls', values: { 'view-navigation': 'view-pulls' } });
+  await started.promise;
+  const latest = await f.render({ action: 'status', values: { status: 'all' } });
+  assert.equal(nodes(latest).find(node => node.id === 'view-navigation').value, 'view-pulls');
+  assert.match(texts(latest), /Merged current PR/);
+  release.resolve();
+  const final = await earlier;
+  assert.equal(nodes(final).find(node => node.id === 'status').value, 'all');
+  assert.doesNotMatch(texts(final), /not found|Initial Issue/);
+  assert.equal(nodes(final).find(node => node.id === 'item-1').symbol, 'arrow.triangle.merge');
+});
+
+test('The current data error remains recoverable after a local search during its request', async () => {
+  const started = deferred(), release = deferred();
+  let fails = true;
+  const f = fixture({ saved: connection, route: async url => {
+    if (url.pathname === '/user') return body({ login: 'alice' });
+    if (url.pathname === '/user/repos') return body([repo()]);
+    if (url.searchParams.get('state') === 'closed' && fails) { started.resolve(); await release.promise; return body({}, 403); }
+    return body([issue(1, 'Recovered issue', { state: url.searchParams.get('state') })]);
+  } });
+  await f.render({});
+  const changing = f.render({ action: 'status', values: { status: 'closed' } });
+  await started.promise;
+  const pending = await f.render({ action: 'query', values: { query: 'Recovered' } });
+  assert.match(texts(pending), /Loading from GitHub/);
+  release.resolve();
+  const failed = await changing;
+  assert.match(texts(failed), /access was denied/);
+  assert.ok(nodes(failed).some(node => node.action === 'retry-load'));
+  fails = false;
+  const recovered = await f.render({ action: 'retry-load' });
+  assert.match(texts(recovered), /Recovered issue/);
+  assert.doesNotMatch(texts(recovered), /access was denied/);
+  assert.equal(nodes(recovered).find(node => node.id === 'status').value, 'closed');
+  assert.equal(nodes(recovered).find(node => node.id === 'query').value, 'Recovered');
+});
+
+test('A transient saved-account error can retry or begin OAuth without a successful old connection', async () => {
+  let fails = true;
+  const f = fixture({ saved: connection, route: async url => {
+    if (url.pathname === '/login/device/code') return body(device());
+    if (url.pathname === '/user') return fails ? body({}, 503) : body({ login: 'alice' });
+    if (url.pathname === '/user/repos') return body([repo()]);
+    return body([]);
+  } });
+  const failed = await f.render({});
+  assert.equal(failed.type, 'emptyState');
+  assert.ok(nodes(failed).some(node => node.action === 'retry-load'));
+  fails = false;
+  const recovered = await f.render({ action: 'retry-load' });
+  assert.equal(recovered.type, 'workspace');
+  await f.render({ action: 'disconnect' });
+  assert.match(texts(await f.render({ action: 'begin-login' })), /ABCD-1234/);
+});
+
+test('Paginated rows remain inside native descriptor limits with an explicit loaded-only search scope', async () => {
+  const f = fixture({ saved: connection, route: async url => {
+    if (url.pathname === '/user') return body({ login: 'alice' });
+    if (url.pathname === '/user/repos') return body([repo()]);
+    const page = Number(url.searchParams.get('page'));
+    return body(Array.from({ length: 50 }, (_, index) => issue((page - 1) * 50 + index + 1, `Issue ${(page - 1) * 50 + index + 1}`,
+      { labels: [{ name: 'bug' }, { name: 'triage' }], updated_at: '2026-10-10T00:00:00Z' })), 200,
+      { link: `<https://api.github.com/repos/alice/project/issues?page=${page + 1}>; rel="next"` });
+  } });
+  await f.render({});
+  await f.render({ action: 'more-items' });
+  const view = await f.render({ action: 'more-items' });
+  assert.equal(nodes(view).find(node => node.id === 'items').items.length, 120);
+  assert.match(texts(view), /120 of 150 loaded|first 120 matches/);
+  assert.ok(nodes(view).length <= 1000);
+  assert.ok(Buffer.byteLength(JSON.stringify(view), 'utf8') <= 512 * 1024);
+  assert.match(texts(await f.render({ action: 'query', values: { query: 'Issue 150' } })), /Issue 150/);
+});
+
+test('An expired account can reconnect from its data error without restoring the old account into OAuth', async () => {
+  let expired = false;
+  const f = fixture({ saved: connection, route: async url => {
+    if (url.pathname === '/login/device/code') return body(device());
+    if (url.pathname === '/user') return body({ login: 'alice' });
+    if (url.pathname === '/user/repos') return body([repo()]);
+    return expired ? body({}, 401) : body([issue(1, 'Existing issue')]);
+  } });
+  await f.render({});
+  expired = true;
+  const failed = await f.render({ action: 'status', values: { status: 'closed' } });
+  assert.ok(nodes(failed).some(node => node.action === 'begin-login'));
+  const login = await f.render({ action: 'begin-login' });
+  assert.equal(login.type, 'emptyState');
+  assert.match(texts(login), /ABCD-1234/);
+  assert.doesNotMatch(texts(login), /alice|Existing issue/);
+  const count = f.requests.length;
+  assert.match(texts(await f.render({ action: 'open-login' })), /ABCD-1234/);
+  assert.equal(f.requests.length, count);
+  assert.equal(f.stored(), connection);
+});
+
+test('The sidebar shows real accessible repositories with independent Issues and PR navigation', async () => {
+  const f = fixture({ saved: connection, route: async url => {
+    if (url.pathname === '/user') return body({ login: 'alice' });
+    if (url.pathname === '/user/repos') return body([repo('alice/first'), repo('team/second', 2)]);
+    return body([issue(1, `${url.pathname.endsWith('/pulls') ? 'PR' : 'Issue'} in ${url.pathname}`)]);
+  } });
+  const initial = await f.render({});
+  const repositories = nodes(initial).find(node => node.id === 'repository-navigation');
+  assert.equal(repositories.type, 'sidebar');
+  assert.deepEqual(Array.from(repositories.items, item => [item.text, item.action]),
+    [['alice/first', 'repo:alice/first'], ['team/second', 'repo:team/second']]);
+  assert.match(texts(repositories), /2 repositories loaded/);
+  await f.render({ action: 'kind:pulls', values: { 'view-navigation': 'view-pulls' } });
+  const switched = await f.render({ action: 'repo:team/second', values: { 'repository-navigation': 'repo-team/second' } });
+  assert.equal(nodes(switched).find(node => node.id === 'repository-navigation').value, 'repo-team/second');
+  assert.equal(nodes(switched).find(node => node.id === 'view-navigation').value, 'view-pulls');
+  assert.match(texts(switched), /PR in \/repos\/team\/second\/pulls/);
+  assert.ok(f.requests.every(request => request.headers.Authorization === 'Bearer test_token'));
+});
+
+test('Repository pagination and local repository search disclose exactly what has loaded', async () => {
+  const f = fixture({ saved: connection, route: async url => {
+    if (url.pathname === '/user') return body({ login: 'alice' });
+    if (url.pathname === '/user/repos') return url.searchParams.get('page') === '2'
+      ? body([repo('alice/first'), repo('team/second', 2)])
+      : body([repo('alice/first')], 200, { link: '<https://api.github.com/user/repos?page=2>; rel="next"' });
+    return body([]);
+  } });
+  const initial = await f.render({});
+  assert.equal(nodes(initial).find(node => node.id === 'repository-navigation').items.length, 1);
+  assert.match(texts(initial.children[0]), /1 repository loaded/);
+  assert.ok(nodes(initial.children[0]).some(node => node.action === 'more-repos'));
+  const loaded = await f.render({ action: 'more-repos' });
+  assert.equal(nodes(loaded).find(node => node.id === 'repository-navigation').items.length, 2);
+  assert.match(texts(loaded.children[0]), /2 repositories loaded/);
+  assert.ok(!nodes(loaded.children[0]).some(node => node.action === 'more-repos'));
+  const count = f.requests.length;
+  const searched = await f.render({ action: 'repo-query', values: { 'repo-query': 'team' } });
+  assert.deepEqual(Array.from(nodes(searched).find(node => node.id === 'repository-navigation').items, item => item.text), ['team/second']);
+  assert.equal(f.requests.length, count);
+  assert.ok(nodes(searched).find(node => node.id === 'repo-query'));
+  const cleared = await f.render({ action: 'repo-query', values: { 'repo-query': '' } });
+  assert.equal(nodes(cleared).find(node => node.id === 'repository-navigation').items.length, 2);
+});
+
+test('Hand to Nora creates a source-rich draft only from the explicit selected-detail action', async () => {
+  const f = fixture({ saved: { token: 'test_token', refreshToken: 'refresh_token' }, route: async url => {
+    if (url.pathname === '/user') return body({ login: 'alice' });
+    if (url.pathname === '/user/repos') return body([repo()]);
+    return body([issue(42, 'Fix issue context', { body: '## Reproduction\nThe editor loses focus.', state: 'closed' })]);
+  } });
+  await f.render({});
+  assert.equal(f.drafts.length, 0);
+  const selected = await f.render({ action: 'item:42' });
+  assert.ok(nodes(selected.children[2]).some(node => node.action === 'handoff-item' && node.appearance === 'primary'));
+  assert.equal(f.drafts.length, 0);
+  const count = f.requests.length;
+  await f.render({ action: 'handoff-item' });
+  assert.equal(f.drafts.length, 1);
+  const draft = f.drafts[0];
+  assert.match(draft.title, /Issue #42.*Fix issue context/);
+  assert.match(draft.prompt, /analyze.*GitHub Issue/);
+  for (const expected of ['GitHub source', 'alice/project', 'Type: Issue', 'Number: #42', 'Fix issue context', 'Closed', 'Author: alice', '## Reproduction', 'The editor loses focus.']) assert.ok(draft.context.includes(expected), expected);
+  assert.equal(draft.sourceURL, 'https://github.com/alice/project/issues/42');
+  assert.ok(draft.context.includes(draft.sourceURL));
+  assert.doesNotMatch(JSON.stringify(draft), /test_token|refresh_token|Authorization|Bearer/);
+  assert.equal(f.requests.length, count);
+  assert.equal(f.writes.length, 0);
+  assert.equal(f.links.length, 0);
+});
+
+test('Nora draft context tracks the current PR and rejects stale or hidden selections', async () => {
+  const f = fixture({ saved: connection, route: async url => {
+    if (url.pathname === '/user') return body({ login: 'alice' });
+    if (url.pathname === '/user/repos') return body([repo('alice/first'), repo('team/second', 2)]);
+    return body([issue(7, 'Selected pull request', { merged_at: '2026-10-10T00:00:00Z', html_url: 'https://github.com/team/second/pull/7' })]);
+  } });
+  await f.render({});
+  await f.render({ action: 'item:7' });
+  await f.render({ action: 'repo:team/second' });
+  await f.render({ action: 'handoff-item' });
+  assert.equal(f.drafts.length, 0);
+  await f.render({ action: 'kind:pulls' });
+  await f.render({ action: 'item:7' });
+  await f.render({ action: 'handoff-item' });
+  assert.match(f.drafts[0].context, /Repository: team\/second\nType: PR/);
+  assert.match(f.drafts[0].context, /State: Merged/);
+  assert.equal(f.drafts[0].sourceURL, 'https://github.com/team/second/pull/7');
+  await f.render({ action: 'close-detail' });
+  await f.render({ action: 'handoff-item' });
+  assert.equal(f.drafts.length, 1);
+});
+
+test('Large Unicode GitHub source becomes a bounded Nora draft with intact text and a complete source link', async () => {
+  const f = fixture({ saved: connection, locale: 'zh-Hans', route: async url => {
+    if (url.pathname === '/user') return body({ login: 'alice' });
+    if (url.pathname === '/user/repos') return body([repo()]);
+    return body([issue(9, '你好🧑🏽‍💻'.repeat(100), { body: '你好🧑🏽‍💻'.repeat(30_000) })]);
+  } });
+  await f.render({});
+  await f.render({ action: 'item:9' });
+  await f.render({ action: 'handoff-item' });
+  const draft = f.drafts[0];
+  assert.ok(draft);
+  assert.ok(Buffer.byteLength(draft.title, 'utf8') <= 256);
+  assert.ok(Buffer.byteLength(draft.prompt, 'utf8') <= 4096);
+  assert.ok(Buffer.byteLength(draft.context, 'utf8') <= 128 * 1024);
+  assert.ok(!/[\ud800-\udbff]$/.test(draft.title));
+  assert.match(draft.context, /描述已截断/);
+  assert.ok(draft.context.includes(draft.sourceURL));
+  assert.equal(draft.sourceURL, 'https://github.com/alice/project/issues/9');
+});
+
+test('Repository rows and issue metadata remain bounded when many repository pages are loaded', async () => {
+  const f = fixture({ saved: connection, route: async url => {
+    if (url.pathname === '/user') return body({ login: 'alice' });
+    const page = Number(url.searchParams.get('page'));
+    if (url.pathname === '/user/repos') return body(Array.from({ length: 50 }, (_, index) => repo(`alice/repo-${(page - 1) * 50 + index}`, (page - 1) * 50 + index + 1)),
+      200, { link: `<https://api.github.com/user/repos?page=${page + 1}>; rel="next"` });
+    return body(Array.from({ length: 50 }, (_, index) => issue((page - 1) * 50 + index + 1, `Issue ${index}`,
+      { labels: [{ name: 'bug' }, { name: 'triage' }], updated_at: '2026-10-10T00:00:00Z' })), 200,
+      { link: `<https://api.github.com/repos/alice/repo-0/issues?page=${page + 1}>; rel="next"` });
+  } });
+  await f.render({});
+  for (let page = 2; page <= 4; page += 1) await f.render({ action: 'more-repos' });
+  await f.render({ action: 'more-items' });
+  const view = await f.render({ action: 'more-items' });
+  assert.equal(nodes(view).find(node => node.id === 'repository-navigation').items.length, 200);
+  assert.ok(nodes(view).length <= 1000);
+  assert.match(texts(view), /200 repositories loaded/);
+  assert.ok(nodes(view).find(node => node.id === 'items').items.length < 120);
+});
+
+test('Handoff requires the current explicit action capability and never saves that capability as content', async () => {
+  const f = fixture({ saved: connection });
+  await f.render({});
+  await f.render({ action: 'item:1' });
+  const missing = await f.renderUnscoped({ action: 'handoff-item' });
+  assert.match(texts(missing), /requires an explicit panel action/);
+  assert.equal(f.drafts.length, 0);
+  const expired = await f.renderUnscoped({ action: 'handoff-item', actionCapability: randomUUID() });
+  assert.match(texts(expired), /action scope expired/);
+  assert.equal(f.drafts.length, 0);
+  const completed = await f.render({ action: 'handoff-item' });
+  assert.equal(f.drafts.length, 1);
+  assert.equal(f.drafts[0].actionCapability, undefined);
+  assert.doesNotMatch(JSON.stringify(completed), /actionCapability/);
+  assert.doesNotMatch(JSON.stringify(f.drafts[0]), /actionCapability/);
+  assert.equal(f.writes.length, 0);
+  assert.equal(f.stored(), connection);
+});
+
+test('Background draft calls cannot borrow an unrelated action that is still loading', async () => {
+  const started = deferred(), release = deferred();
+  let waits = false;
+  const f = fixture({ saved: connection, route: async url => {
+    if (url.pathname === '/user') return body({ login: 'alice' });
+    if (url.pathname === '/user/repos') {
+      if (waits) { started.resolve(); await release.promise; }
+      return body([repo()]);
+    }
+    return body([issue(1, 'Issue one')]);
+  } });
+  await f.render({});
+  waits = true;
+  const refreshing = f.render({ action: 'refresh' });
+  await started.promise;
+  const draft = { title: 'Background draft', prompt: 'This must not open', context: '' };
+  for (const event of [undefined, {}, { action: 'handoff-item' }, { actionCapability: randomUUID() }]) {
+    await assert.rejects(f.requestDraft(draft, event), /requires an explicit panel action/);
+  }
+  assert.equal(f.drafts.length, 0);
+  release.resolve();
+  await refreshing;
+  assert.equal(f.drafts.length, 0);
 });
