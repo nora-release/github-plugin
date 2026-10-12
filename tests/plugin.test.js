@@ -449,6 +449,107 @@ test('Account and repository utilities stay in menus and manual repository entry
   assert.equal(new URL(f.requests.at(-1).url).pathname, '/repos/bob/other/issues');
 });
 
+test('One workspace toolbar keeps repository context search and filters while account actions stay in the sidebar', async () => {
+  const f = fixture({ saved: connection, route: async url => {
+    if (url.pathname === '/user') return body({ login: 'alice' });
+    if (url.pathname === '/user/repos') return body([repo()]);
+    return body([issue(1, 'Editor fix'), issue(2, 'Settings fix', { user: { login: 'bob' } })]);
+  } });
+  const initial = await f.render({});
+  const [sidebar, main] = initial.children;
+  const toolbar = main.children[0];
+  assert.equal(main.children.filter(node => node.type === 'toolbar').length, 1);
+  assert.equal(toolbar.type, 'toolbar');
+  assert.match(texts(toolbar), /alice\/project\nIssues/);
+  assert.equal(nodes(toolbar).find(node => node.text === 'alice/project').textStyle, 'caption');
+  assert.equal(nodes(toolbar).find(node => node.text === 'Issues').textStyle, 'headline');
+  assert.ok(nodes(toolbar).some(node => node.id === 'query' && node.placeholder === 'Search loaded items'));
+  assert.ok(nodes(toolbar).some(node => node.id === 'status' && node.action === 'status'));
+  assert.ok(nodes(toolbar).some(node => node.action === 'refresh'));
+  assert.ok(!nodes(main).some(node => node.action === 'disconnect' || node.action === 'show-other-repo'));
+  assert.doesNotMatch(texts(main), /\d+ of \d+ loaded/);
+  assert.equal(sidebar.children[0].type, 'toolbar');
+  const account = nodes(sidebar.children[0]).find(node => node.type === 'menu');
+  assert.equal(account.text, 'alice');
+  for (const action of ['show-other-repo', 'manage', 'refresh-repos', 'disconnect']) {
+    assert.ok(nodes(account).some(node => node.action === action), action);
+  }
+  assert.ok(nodes(sidebar).some(node => node.id === 'repo-query' && node.symbol === 'magnifyingglass'));
+  assert.equal(sidebar.children.filter(node => node.type === 'divider').length, 0);
+  const requestCount = f.requests.length;
+  const filtered = await f.render({ action: 'author', values: { author: 'bob' } });
+  assert.deepEqual(Array.from(nodes(filtered).find(node => node.id === 'items').items, item => item.text), ['Settings fix']);
+  assert.match(texts(filtered.children[1].children[0]), /Open · 1 filter/);
+  assert.equal(f.requests.length, requestCount);
+  const switched = await f.render({ action: 'kind:pulls' });
+  assert.match(texts(switched.children[1].children[0]), /alice\/project\nPull requests/);
+  assert.equal(new URL(f.requests.at(-1).url).pathname, '/repos/alice/project/pulls');
+  assert.equal(f.stored(), connection);
+  assert.equal(f.writes.length, 0);
+});
+
+test('A selected PR has one detail header and a complete Markdown description before an explicit Nora handoff', async () => {
+  const f = fixture({ saved: connection, now: () => Date.parse('2026-10-12T00:00:00Z'), route: async url => {
+    if (url.pathname === '/user') return body({ login: 'alice' });
+    if (url.pathname === '/user/repos') return body([repo()]);
+    return body([issue(42, 'Keep the editor selection when switching pages', {
+      state: 'closed', merged_at: '2026-10-10T10:00:00Z', updated_at: '2026-10-10T10:00:00Z',
+      user: { login: 'bob' }, labels: [{ name: 'native' }, { name: 'reviewed' }],
+      html_url: 'https://github.com/alice/project/pull/42', body: '## Changes\nPreserve the selection.\n\n- Keep keyboard focus.'
+    })]);
+  } });
+  await f.render({});
+  await f.render({ action: 'kind:pulls' });
+  const requestCount = f.requests.length;
+  const selected = await f.render({ action: 'item:42' });
+  const detail = selected.children[2];
+  assert.equal(detail.id, 'item-details');
+  assert.equal(detail.children[0].type, 'toolbar');
+  assert.equal(nodes(detail).filter(node => node.type === 'toolbar').length, 1);
+  assert.match(texts(detail.children[0]), /PR #42\nMerged/);
+  assert.equal(nodes(detail).filter(node => node.type === 'badge' && node.text === 'Merged').length, 1);
+  const title = nodes(detail).find(node => node.textStyle === 'title');
+  assert.equal(title.text, 'Keep the editor selection when switching pages');
+  assert.ok(!nodes(detail.children[0]).includes(title));
+  assert.match(texts(detail), /bob · Oct 10\nnative · reviewed/);
+  assert.equal(nodes(detail).find(node => node.type === 'markdown').text, '## Changes\nPreserve the selection.\n\n- Keep keyboard focus.');
+  assert.ok(nodes(detail).some(node => node.action === 'handoff-item' && node.appearance === 'primary'));
+  assert.equal(f.drafts.length, 0);
+  await f.render({ action: 'handoff-item' });
+  assert.equal(f.drafts.length, 1);
+  assert.match(f.drafts[0].context, /Repository: alice\/project\nType: PR\nNumber: #42/);
+  assert.match(f.drafts[0].context, /State: Merged\nAuthor: bob/);
+  assert.ok(f.drafts[0].context.includes('## Changes\nPreserve the selection.\n\n- Keep keyboard focus.'));
+  assert.equal(f.drafts[0].sourceURL, 'https://github.com/alice/project/pull/42');
+  assert.doesNotMatch(JSON.stringify(f.drafts[0]), /test_token|Authorization|actionCapability/);
+  assert.equal(f.requests.length, requestCount);
+  assert.equal(f.stored(), connection);
+  assert.equal(f.writes.length, 0);
+});
+
+test('List author and date stay separate while the inspector retains labels beyond the first list badge', async () => {
+  const labels = Array.from({ length: 12 }, (_, index) => ({ name: `label-${index + 1}` }));
+  const f = fixture({ saved: connection, now: () => Date.parse('2026-10-12T00:00:00Z'), route: async url => {
+    if (url.pathname === '/user') return body({ login: 'alice' });
+    if (url.pathname === '/user/repos') return body([repo()]);
+    return body([issue(7, 'Keep all review labels', { user: { login: 'a-long-repository-author' },
+      updated_at: '2026-10-10T10:00:00Z', labels })]);
+  } });
+  const initial = await f.render({});
+  const item = nodes(initial).find(node => node.id === 'item-7');
+  assert.deepEqual(Array.from(item.children, node => [node.type, node.text]), [
+    ['badge', 'Open'], ['text', 'a-long-repository-author'], ['text', 'Oct 10'], ['badge', 'label-1']
+  ]);
+  assert.ok(item.children.every(node => node.type !== 'text' || node.textStyle === 'caption'));
+  const requestCount = f.requests.length;
+  const detail = (await f.render({ action: 'item:7' })).children[2];
+  const detailLabels = nodes(detail).find(node => node.text === labels.map(label => label.name).join(' · '));
+  assert.ok(detailLabels);
+  assert.equal(detailLabels.textStyle, 'caption');
+  assert.equal(f.requests.length, requestCount);
+  assert.equal(f.drafts.length, 0);
+});
+
 test('Local author label and search filters never fetch data and hide details that leave the results', async () => {
   const f = fixture({ saved: connection, route: async url => {
     if (url.pathname === '/user') return body({ login: 'alice' });
@@ -627,7 +728,7 @@ test('The sidebar shows real accessible repositories with independent Issues and
   assert.equal(repositories.type, 'sidebar');
   assert.deepEqual(Array.from(repositories.items, item => [item.text, item.action]),
     [['alice/first', 'repo:alice/first'], ['team/second', 'repo:team/second']]);
-  assert.match(texts(repositories), /2 repositories loaded/);
+  assert.equal(nodes(repositories).find(node => node.id === 'repo-query').placeholder, 'Search loaded repositories');
   await f.render({ action: 'kind:pulls', values: { 'view-navigation': 'view-pulls' } });
   const switched = await f.render({ action: 'repo:team/second', values: { 'repository-navigation': 'repo-team/second' } });
   assert.equal(nodes(switched).find(node => node.id === 'repository-navigation').value, 'repo-team/second');
@@ -646,11 +747,11 @@ test('Repository pagination and local repository search disclose exactly what ha
   } });
   const initial = await f.render({});
   assert.equal(nodes(initial).find(node => node.id === 'repository-navigation').items.length, 1);
-  assert.match(texts(initial.children[0]), /1 repository loaded/);
+  assert.equal(nodes(initial.children[0]).find(node => node.id === 'repo-query').placeholder, 'Search loaded repositories');
   assert.ok(nodes(initial.children[0]).some(node => node.action === 'more-repos'));
   const loaded = await f.render({ action: 'more-repos' });
   assert.equal(nodes(loaded).find(node => node.id === 'repository-navigation').items.length, 2);
-  assert.match(texts(loaded.children[0]), /2 repositories loaded/);
+  assert.doesNotMatch(texts(loaded.children[0]), /repositories loaded/);
   assert.ok(!nodes(loaded.children[0]).some(node => node.action === 'more-repos'));
   const count = f.requests.length;
   const searched = await f.render({ action: 'repo-query', values: { 'repo-query': 'team' } });
@@ -745,7 +846,7 @@ test('Repository rows and issue metadata remain bounded when many repository pag
   const view = await f.render({ action: 'more-items' });
   assert.equal(nodes(view).find(node => node.id === 'repository-navigation').items.length, 200);
   assert.ok(nodes(view).length <= 1000);
-  assert.match(texts(view), /200 repositories loaded/);
+  assert.equal(nodes(view).find(node => node.id === 'repo-query').placeholder, 'Search loaded repositories');
   assert.ok(nodes(view).find(node => node.id === 'items').items.length < 120);
 });
 

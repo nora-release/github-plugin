@@ -258,7 +258,7 @@
     if (item.merged_at) return { text: t('Merged', '已合并'), symbol: 'arrow.triangle.merge', tone: 'accent' };
     if (item.state === 'closed') return { text: t('Closed', '已关闭'), symbol: state.kind === 'pulls' ? 'xmark.circle' : 'checkmark.circle', tone: state.kind === 'pulls' ? 'danger' : 'accent' };
     if (item.draft) return { text: t('Draft', '草稿'), symbol: 'circle.dashed', tone: 'muted' };
-    return { text: t('Open', '打开'), symbol: state.kind === 'pulls' ? 'arrow.triangle.pull' : 'circle.circle', tone: 'success' };
+    return { text: t('Open', '未关闭'), symbol: state.kind === 'pulls' ? 'arrow.triangle.pull' : 'circle.circle', tone: 'success' };
   }
   const short = (value, limit = 512) => Array.from(String(value ?? '')).slice(0, limit).join('');
   const itemLabels = item => (Array.isArray(item.labels) ? item.labels : []).map(label => typeof label === 'string' ? label : label?.name).filter(name => typeof name === 'string' && name).map(name => short(name, 128));
@@ -354,24 +354,24 @@
         : t('Connect your own account to browse repositories, Issues, and pull requests.', '连接你自己的账号，查看仓库、Issues 和 PR。'),
       symbol: 'chevron.left.forwardslash.chevron.right' }, children);
   }
-  function repositoryMenu() {
-    const children = [button(t('Open another repository…', '打开其他仓库…'), 'show-other-repo', false, { symbol: 'plus' }),
+  function accountMenu() {
+    const children = [styledText(short(state.user.login, 64), 'headline', 'neutral'), node('divider'),
+      button(t('Open another repository…', '打开其他仓库…'), 'show-other-repo', false, { symbol: 'plus' }),
       button(message.manage, 'manage', false, { symbol: 'folder.badge.gearshape' }),
-      button(t('Refresh repositories', '刷新仓库'), 'refresh-repos', state.reposLoading, { symbol: 'arrow.clockwise' })];
-    return menu(state.repo ? state.repo.split('/')[1] : message.repos, children, 'folder');
+      button(t('Refresh repositories', '刷新仓库'), 'refresh-repos', state.reposLoading, { symbol: 'arrow.clockwise' }), node('divider'),
+      button(t('Disconnect', '断开连接'), 'disconnect', false, { symbol: 'rectangle.portrait.and.arrow.right' })];
+    return node('menu', { text: short(state.user.login, 64), symbol: 'person.crop.circle', appearance: 'icon' }, children);
   }
   function repositorySidebar() {
     const query = state.repoQuery.trim().toLowerCase();
     const matchingRepos = state.repos.filter(repo => repo.full_name.toLowerCase().includes(query));
     const repos = matchingRepos.slice(0, 600);
-    const children = [node('toolbar', {}, [styledText('GitHub', 'headline', 'neutral')]), repositoryMenu(),
+    const children = [node('toolbar', {}, [styledText('GitHub', 'headline', 'neutral'), node('spacer'), accountMenu()]),
       node('sidebar', { id: 'view-navigation', value: `view-${state.kind}`, items: [
         node('navigationItem', { id: 'view-issues', text: 'Issues', symbol: 'circle.circle', action: 'kind:issues' }),
         node('navigationItem', { id: 'view-pulls', text: t('Pull requests', 'PR'), symbol: 'arrow.triangle.pull', action: 'kind:pulls' })
-      ] }), node('divider'), styledText(t('Repositories', '仓库')),
-      ...(state.repos.length >= 50 || state.repoQuery ? [node('textField', { id: 'repo-query', action: 'repo-query',
-        placeholder: t('Find loaded repositories', '查找已加载的仓库'), value: state.repoQuery })] : []),
-      styledText(t(`${state.repos.length} ${state.repos.length === 1 ? 'repository' : 'repositories'} loaded`, `已加载 ${state.repos.length} 个仓库`))];
+      ] }), node('textField', { id: 'repo-query', action: 'repo-query',
+        placeholder: t('Search loaded repositories', '搜索已加载仓库'), value: state.repoQuery, symbol: 'magnifyingglass' })];
     if (repos.length < matchingRepos.length) children.push(styledText(t(`Showing ${repos.length} matches. Search to find others.`, `显示 ${repos.length} 个匹配结果；搜索可查找其他仓库。`)));
     if (state.moreRepos) children.push(button(t('Load more repositories', '加载更多仓库'), 'more-repos', state.reposLoading, { symbol: 'arrow.down.circle' }));
     if (query && !repos.length) children.push(styledText(t('No matching loaded repositories.', '已加载的仓库中没有匹配结果。')));
@@ -382,9 +382,12 @@
   function filterMenu() {
     const authors = [...new Set([state.author, ...state.items.map(item => item.user?.login)].filter(value => typeof value === 'string' && value))].sort().slice(0, 999);
     const labels = [...new Set([state.label, ...state.items.flatMap(itemLabels)].filter(Boolean))].sort().slice(0, 999);
-    return menu(t('Filter', '筛选'), [
+    const filterCount = Number(!!state.author) + Number(!!state.label);
+    const stateLabel = state.status === 'all' ? t('All states', '全部状态') : state.status === 'closed' ? t('Closed', '已关闭') : t('Open', '未关闭');
+    const label = filterCount ? t(`${stateLabel} · ${filterCount} ${filterCount === 1 ? 'filter' : 'filters'}`, `${stateLabel} · ${filterCount} 项筛选`) : stateLabel;
+    return menu(label, [
       node('picker', { id: 'status', text: t('State on GitHub', 'GitHub 状态'), action: 'status', value: state.status,
-        options: [{ value: 'open', text: t('Open', '打开') }, { value: 'closed', text: t('Closed', '已关闭') }, { value: 'all', text: t('All', '全部') }] }),
+        options: [{ value: 'open', text: t('Open', '未关闭') }, { value: 'closed', text: t('Closed', '已关闭') }, { value: 'all', text: t('All', '全部') }] }),
       node('divider'),
       node('picker', { id: 'author', text: t('Author in loaded items', '已加载条目的作者'), action: 'author', value: state.author,
         options: [{ value: '', text: t('All authors', '全部作者') }, ...authors.map(value => ({ value, text: value }))] }),
@@ -397,20 +400,23 @@
     const status = itemStatus(item), date = itemDate(item);
     const metadata = [node('badge', { text: status.text, tone: status.tone }), styledText(short(item.user?.login || t('Unknown author', '未知作者'), 64))];
     if (date) metadata.push(styledText(date));
-    metadata.push(...itemLabels(item).slice(0, 2).map(label => node('badge', { text: label, tone: 'neutral' })));
+    metadata.push(...itemLabels(item).slice(0, 1).map(label => node('badge', { text: label, tone: 'neutral' })));
     return node('collectionItem', { id: `item-${item.number}`, text: short(item.title, 4096), subtitle: `#${item.number}`,
       action: `item:${item.number}`, symbol: status.symbol, tone: status.tone }, metadata);
   }
   function detailView() {
     const item = state.selected, status = itemStatus(item), date = itemDate(item);
     return node('column', { id: 'item-details' }, [
-      node('toolbar', {}, [styledText(`${state.kind === 'pulls' ? 'PR' : 'Issue'} #${item.number}`, 'monospaced'), node('spacer'),
+      node('toolbar', {}, [styledText(`${state.kind === 'pulls' ? 'PR' : 'Issue'} #${item.number}`, 'monospaced'),
+        node('badge', { text: status.text, tone: status.tone }), node('spacer'),
         button(t('View on GitHub', '在 GitHub 查看'), 'open-item', false, { appearance: 'icon', symbol: 'arrow.up.forward.square' })]),
-      styledText(short(item.title, 4096), 'headline', 'neutral'),
-      row([node('badge', { text: status.text, tone: status.tone }), ...itemLabels(item).slice(0, 8).map(label => node('badge', { text: label, tone: 'neutral' }))]),
-      styledText([short(item.user?.login || t('Unknown author', '未知作者'), 64), date].filter(Boolean).join(' · ')),
-      button(t('Hand to Nora', '交给 Nora'), 'handoff-item', false, { appearance: 'primary', symbol: 'sparkles' }),
-      node('divider'), node('markdown', { text: displayedBody(item.body) })
+      column([
+        styledText(short(item.title, 4096), 'title', 'neutral'),
+        styledText([short(item.user?.login || t('Unknown author', '未知作者'), 64), date].filter(Boolean).join(' · ')),
+        ...(itemLabels(item).length ? [styledText(boundedText(itemLabels(item).join(' · '), 63 * 1024,
+          ' · ' + t('More labels are available on GitHub.', '更多标签可在 GitHub 查看。')))] : []),
+        row([button(t('Hand to Nora', '交给 Nora'), 'handoff-item', false, { appearance: 'primary', symbol: 'sparkles' })])
+      ]), node('markdown', { text: displayedBody(item.body) })
     ]);
   }
   function emptyListView() {
@@ -431,10 +437,10 @@
   function view() {
     if (!state.user) return connectionView();
     const sidebar = repositorySidebar();
-    const accountMenu = menu(short(state.user.login, 64), [button(message.manage, 'manage'),
-      button(t('Disconnect', '断开连接'), 'disconnect', false, { symbol: 'rectangle.portrait.and.arrow.right' })], 'person.crop.circle');
-    const main = [node('toolbar', {}, [styledText(state.repo || message.repos, 'headline', 'neutral'), node('spacer'),
-      button(message.refresh, 'refresh', state.itemsLoading || state.reposLoading, { appearance: 'icon', symbol: 'arrow.clockwise' }), accountMenu]), node('divider')];
+    const main = [node('toolbar', {}, [column([styledText(state.repo || message.repos, 'caption'),
+      styledText(state.kind === 'pulls' ? t('Pull requests', 'PR') : 'Issues', 'headline', 'neutral')]), node('spacer'),
+      node('textField', { id: 'query', action: 'query', placeholder: t('Search loaded items', '搜索已加载条目'), value: state.query, symbol: 'magnifyingglass' }),
+      filterMenu(), button(message.refresh, 'refresh', state.itemsLoading || state.reposLoading, { appearance: 'icon', symbol: 'arrow.clockwise' })])];
     if (state.showOtherRepository) {
       main.push(node('emptyState', { id: 'other-repository', text: t('Open another repository', '打开其他仓库'),
         subtitle: t('Enter owner/name. Your connected account must have access.', '输入 owner/name；已连接的账号需要拥有访问权限。'), symbol: 'folder.badge.plus' }, [
@@ -446,11 +452,6 @@
     }
     const maximumVisibleItems = Math.min(120, Math.floor((880 - sidebar.items.length) / 6));
     const items = filteredItems(), visibleItems = items.slice(0, maximumVisibleItems);
-    main.push(node('toolbar', {}, [styledText(state.kind === 'pulls' ? t('Pull requests', 'PR') : 'Issues', 'headline', 'neutral'), node('spacer'), filterMenu(),
-      node('textField', { id: 'query', action: 'query', placeholder: t('Search loaded items', '搜索已加载条目'), value: state.query, symbol: 'magnifyingglass' })]));
-    const count = t(`${visibleItems.length} of ${state.items.length} loaded`, `已加载 ${state.items.length} 条，显示 ${visibleItems.length} 条`);
-    main.push(row([styledText(count), node('spacer'), node('badge', { text: state.status === 'all' ? t('All states', '全部状态') : state.status === 'closed' ? t('Closed', '已关闭') : t('Open', '打开'), tone: 'muted' }),
-      ...(state.author ? [node('badge', { text: state.author, tone: 'neutral' })] : []), ...(state.label ? [node('badge', { text: state.label, tone: 'neutral' })] : [])]));
     if (items.length > visibleItems.length) main.push(styledText(t(`Showing the first ${maximumVisibleItems} matches. Narrow your search to find other loaded items.`, `显示前 ${maximumVisibleItems} 个匹配结果；缩小搜索范围可查看其他已加载条目。`)));
     if (state.error && visibleItems.length) main.push(row([node('badge', { text: state.error, tone: 'danger' }),
       button(state.error === message.expired ? t('Reconnect GitHub', '重新连接 GitHub') : t('Try again', '重试'), state.error === message.expired ? 'begin-login' : 'retry-load')]));
