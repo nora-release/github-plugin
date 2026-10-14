@@ -5,7 +5,7 @@
   "id": "com.nora.github",
   "name": "GitHub",
   "iconPath": "assets/github.svg",
-  "version": "0.2.2",
+  "version": "0.2.3",
   "summary": "Connect your GitHub account and browse your repositories, issues, and pull requests in a native Nora panel.",
   "publisher": "Nora",
   "apiVersion": 1,

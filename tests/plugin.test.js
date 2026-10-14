@@ -96,6 +96,22 @@ test('The first sidebar row is the username menu with the real public avatar and
   assert.equal(f.requests.filter(request => request.responseEncoding === 'base64').length, 1);
 });
 
+test('The account menu starts with repository actions without repeating the username', async () => {
+  for (const locale of ['en', 'zh-Hans']) {
+    const f = fixture({ saved: connection, locale });
+    const account = accountHeader(await f.render({}));
+    assert.equal(account.text, 'alice');
+    assert.equal(nodes(account).filter(node => node.text === 'alice').length, 1);
+    assert.equal(account.children[0].type, 'button');
+    assert.equal(account.children[0].text, locale === 'en' ? 'Open another repository…' : '打开其他仓库…');
+    assert.deepEqual(Array.from(account.children, node => node.action || node.type),
+      ['show-other-repo', 'manage', 'refresh-repos', 'divider', 'disconnect']);
+    assert.ok(account.children.filter(node => node.type === 'button').every(node => !node.disabled));
+    assert.equal(f.stored(), connection);
+    assert.equal(f.writes.length, 0);
+  }
+});
+
 test('Missing or untrusted avatar URLs keep the account placeholder without requesting another website', async () => {
   for (const avatarURL of [undefined, '', 'http://avatars.githubusercontent.com/u/1',
     'https://github.com/u/1', 'https://avatars.githubusercontent.com.evil.test/u/1',

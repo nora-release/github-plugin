@@ -401,8 +401,7 @@
       symbol: 'chevron.left.forwardslash.chevron.right' }, children);
   }
   function accountMenu() {
-    const children = [styledText(short(state.user.login, 64), 'headline', 'neutral'), node('divider'),
-      button(t('Open another repository…', '打开其他仓库…'), 'show-other-repo', false, { symbol: 'plus' }),
+    const children = [button(t('Open another repository…', '打开其他仓库…'), 'show-other-repo', false, { symbol: 'plus' }),
       button(message.manage, 'manage', false, { symbol: 'folder.badge.gearshape' }),
       button(t('Refresh repositories', '刷新仓库'), 'refresh-repos', state.reposLoading, { symbol: 'arrow.clockwise' }), node('divider'),
       button(t('Disconnect', '断开连接'), 'disconnect', false, { symbol: 'rectangle.portrait.and.arrow.right' })];
