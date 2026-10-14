@@ -23,7 +23,7 @@ function boundedText(value, maximum, suffix = '') {
   }
   return result + suffix;
 }
-function view(locale = 'en') {
+function view(locale = 'en', capabilities = {}) {
   return createView({
     node: (type, properties = {}, children = []) => ({ ...properties, type, children }),
     t: (en, zh) => locale === 'zh' ? zh : en,
@@ -32,6 +32,7 @@ function view(locale = 'en') {
     short: (value, maximum = 512) => Array.from(String(value ?? '')).slice(0, maximum).join(''),
     itemStatus: () => ({ text: 'Open', tone: 'success' }),
     itemDate: value => String(value.updated_at || value.created_at || '').slice(0, 10),
+    ...capabilities,
   });
 }
 function model() {
@@ -52,6 +53,18 @@ function run(id = 100, changes = {}) {
 function check(id, changes = {}) {
   return { id, name: `check-${id}`, head_sha: headSHA, status: 'completed', conclusion: 'success', output: { title: 'Check result', summary: `Check summary ${id}` }, ...changes };
 }
+
+test('Earlier Nora hosts retain PR information without requesting an unsupported comment editor', () => {
+  const api = view('en', { supportsTextEditor: false });
+  const value = model();
+  value.tab = 'discussion';
+  const nodes = flatten([...api.summary(value), ...api.content(value), ...api.actions(value)]);
+  assert.ok(nodes.some(node => node.type === 'markdown' && node.text === 'PR description'));
+  assert.ok(nodes.some(node => node.action === 'pr-tab:checks'));
+  assert.ok(nodes.some(node => node.text === 'Update Nora to use the native comment editor.'));
+  assert.ok(nodes.some(node => node.text === 'Comment on GitHub' && node.action.startsWith('pr-open:')));
+  assert.ok(!nodes.some(node => node.type === 'textEditor' || node.action === 'pr-comment'));
+});
 
 test('Thirty check runs cannot hide GitHub Actions or its native CI source controls', () => {
   const current = model();

@@ -257,7 +257,7 @@
     }
     return { get current() { return model; }, reset() { ++revision; model = null; }, open, selectTab, refresh, more, jobs, setCommentDraft, postComment, prepareMerge, confirmMerge, cancelMerge, context };
   }
-  function createPullRequestView({ node, t, boundedText, displayedBody, short, itemStatus, itemDate }) {
+  function createPullRequestView({ node, t, boundedText, displayedBody, short, itemStatus, itemDate, supportsTextEditor = true }) {
     const text = (value, textStyle = 'caption', tone = 'muted') => node('text', { text: boundedText(String(value ?? ''), 4096, '…'), textStyle, tone });
     const column = children => node('column', {}, children);
     const row = children => node('row', {}, children);
@@ -551,7 +551,10 @@
     function actions(model) {
       const item = model.item || {}, comment = model.comment || {}, merge = model.merge || {}, repo = repository(model), repoState = section(model, 'repository');
       const result = [node('divider')];
-      if (model.tab === 'discussion' || model.tab === 'overview' || !model.tab) {
+      if ((model.tab === 'discussion' || model.tab === 'overview' || !model.tab) && !supportsTextEditor) {
+        result.push(text(t('Update Nora to use the native comment editor.', '更新 Nora 后即可使用原生留言编辑框。')),
+          open(model, t('Comment on GitHub', '在 GitHub 留言'), prURL(model)), node('divider'));
+      } else if (model.tab === 'discussion' || model.tab === 'overview' || !model.tab) {
         result.push(text(t('Leave a comment', '留言'), 'headline', 'neutral'), node('textEditor', { id: comment.fieldID || `pr-comment-${model.key}`, text: t('Comment', '留言'), textStyle: 'body', placeholder: t('Write a comment…', '写下你的留言…'), value: comment.draft || '', disabled: !!comment.busy }),
           row([button(comment.busy ? t('Posting…', '正在发送…') : t('Post comment', '发送留言'), 'pr-comment', { appearance: 'secondary', symbol: 'text.bubble', disabled: !!comment.busy || !!repo.archived })]));
         if (comment.error) result.push(badge(comment.error, 'danger', 'exclamationmark.circle'));
@@ -1346,7 +1349,8 @@
       state.items = state.items.map(loaded => itemKey(loaded) === itemKey(item) ? item : loaded);
     }
   });
-  const pullView = createPullRequestView({ node, t, boundedText, displayedBody, short, itemStatus, itemDate });
+  const pullView = createPullRequestView({ node, t, boundedText, displayedBody, short, itemStatus, itemDate,
+    supportsTextEditor: typeof nora.ui.textEditor === 'function' });
   nora.registerPanel(panelID, async (event = {}) => {
     const revision = ++renderRevision;
     state.error = '';
