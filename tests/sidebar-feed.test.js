@@ -9,6 +9,7 @@ const feedItem = (repository, number, title, extra = {}) => issue(number, title,
 });
 const key = (repository, number) => `item-${repository}/${number}`;
 const itemActions = view => nodes(view).filter(node => node.action?.startsWith('item:')).map(node => node.action);
+const apiRequests = f => f.requests.filter(request => new URL(request.url).hostname === 'api.github.com');
 const basics = url => url.pathname === '/user' ? body({ login: 'alice' }) : url.pathname === '/user/repos' ? body([repo('alice/project'), repo('team/second', 2)]) : null;
 
 function feedFixture(route) {
@@ -24,8 +25,8 @@ test('Connected overview requests one all-repository feed without selecting or f
   const view = await f.render({});
   assert.match(texts(view), /Team issue/);
   assert.deepEqual(itemActions(view), [`item:${key('team/second', 17)}`]);
-  assert.equal(f.requests.length, 3);
-  assert.ok(f.requests.every(request => request.headers.Authorization === 'Bearer test_token'));
+  assert.equal(apiRequests(f).length, 3);
+  assert.ok(apiRequests(f).every(request => request.headers.Authorization === 'Bearer test_token'));
   assert.ok(!f.requests.some(request => new URL(request.url).pathname.startsWith('/repos/')));
 });
 
@@ -50,12 +51,14 @@ test('A page with only the other kind retains the server next page and reaches l
   await f.render({});
   const first = await f.render({ action: 'kind:pulls' });
   assert.equal(itemActions(first).length, 0);
-  assert.ok(nodes(first).some(node => node.action === 'more-items'));
+  assert.equal(first.children[0].loadMoreAction, 'more-items');
+  assert.ok(first.children[0].loadMoreToken);
   assert.doesNotMatch(texts(first), /No pull requests in this view/);
   const next = await f.render({ action: 'more-items' });
   assert.match(texts(next), /Later pull/);
-  assert.ok(!nodes(next).some(node => node.action === 'more-items'));
-  assert.equal(new URL(f.requests.at(-1).url).searchParams.get('page'), '2');
+  assert.equal(next.children[0].loadMoreAction, undefined);
+  assert.equal(next.children[0].loadMoreToken, undefined);
+  assert.equal(new URL(apiRequests(f).at(-1).url).searchParams.get('page'), '2');
 });
 
 test('Global pagination deduplicates repository and number rather than inconsistent REST item IDs', async () => {

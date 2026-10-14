@@ -6,6 +6,7 @@ import { fixture, body, repo, issue, nodes, texts, connection } from './fixtures
 const avatarPNG = 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=';
 const avatarJPEG = '/9j/4AAQSkZJRgABAQEASABIAAD/2wBDAP//////////////////////////////////////////////////////////////////////////////////////2wBDAf//////////////////////////////////////////////////////////////////////////////////////wAARCAABAAEDASIAAhEBAxEB/8QAFQABAQAAAAAAAAAAAAAAAAAAAAX/xAAUEAEAAAAAAAAAAAAAAAAAAAAA/9oADAMBAAIQAxAAAAEf/8QAFBABAAAAAAAAAAAAAAAAAAAAAP/aAAgBAQABBQJ//8QAFBEBAAAAAAAAAAAAAAAAAAAAAP/aAAgBAwEBPwF//8QAFBEBAAAAAAAAAAAAAAAAAAAAAP/aAAgBAgEBPwF//8QAFBABAAAAAAAAAAAAAAAAAAAAAP/aAAgBAQAGPwJ//8QAFBABAAAAAAAAAAAAAAAAAAAAAP/aAAgBAQABPyF//9oADAMBAAIAAwAAABAf/8QAFBEBAAAAAAAAAAAAAAAAAAAAAP/aAAgBAwEBPxB//8QAFBEBAAAAAAAAAAAAAAAAAAAAAP/aAAgBAgEBPxB//8QAFBABAAAAAAAAAAAAAAAAAAAAAP/aAAgBAQABPxB//9k=';
 const accountHeader = view => view.children[0].children[0];
+const apiRequests = f => f.requests.filter(request => new URL(request.url).hostname === 'api.github.com');
 const avatarResponse = (bodyBase64 = avatarPNG, status = 200, contentType = 'image/png') => ({
   status, headers: { 'content-type': contentType }, bodyBase64,
 });
@@ -83,8 +84,8 @@ test('Missing or untrusted avatar URLs keep the account placeholder without requ
     assert.equal(accountHeader(view).symbol, 'person.crop.circle');
     assert.equal(accountHeader(view).avatarBase64, undefined);
     assert.match(texts(view), /Issue one/);
-    assert.equal(f.requests.filter(request => request.responseEncoding === 'base64').length, 0);
-    assert.ok(f.requests.every(request => new URL(request.url).hostname === 'api.github.com'));
+    assert.equal(f.requests.filter(request => request.responseEncoding === 'base64' && request.maximumResponseBytes === 96 * 1024).length, 0);
+    assert.ok(f.requests.every(request => ['api.github.com', 'avatars.githubusercontent.com'].includes(new URL(request.url).hostname)));
   }
 });
 
@@ -203,7 +204,7 @@ test('An old avatar response cannot replace the newer accounts avatar or usernam
   assert.equal(accountHeader(late).text, 'bob');
   assert.equal(accountHeader(late).avatarBase64, avatarJPEG);
   assert.equal(JSON.parse(f.stored()).token, 'newer_token');
-  assert.equal(f.requests.filter(request => request.responseEncoding === 'base64').length, 2);
+  assert.equal(f.requests.filter(request => request.responseEncoding === 'base64' && request.maximumResponseBytes === 96 * 1024).length, 2);
 });
 
 test('Disconnect clears the avatar and a new connection fetches its own copy', async () => {
@@ -254,7 +255,7 @@ test('Repos and Issues are read under the connected user credentials', async () 
   const view = await f.render({});
   assert.match(texts(view), /alice/);
   assert.match(texts(view), /Issue one/);
-  assert.ok(f.requests.every(request => request.headers.Authorization === 'Bearer test_token'));
+  assert.ok(apiRequests(f).every(request => request.headers.Authorization === 'Bearer test_token'));
   const repository = nodes(view.children[0]).find(node => node.id === 'repository');
   assert.equal(repository.value, '');
   assert.ok(repository.options.some(option => option.value === 'alice/project'));
@@ -592,8 +593,11 @@ test('A native workspace lists issues in its sidebar and opens full details dire
   assert.equal(item.id, 'item-alice/project/1');
   assert.equal(item.action, 'item:item-alice/project/1');
   assert.equal(item.text, 'Fix the editor');
-  assert.match(item.subtitle, /alice\/project.*#1/);
-  assert.equal(item.tone, 'success');
+  assert.match(item.subtitle, /#1.*alice\/project/);
+  assert.equal(item.symbol, 'person.crop.circle');
+  assert.equal(item.tone, 'neutral');
+  assert.equal(item.children[0].type, 'badge');
+  assert.equal(item.children[0].tone, 'success');
   assert.ok(!nodes(initial).some(node => node.type === 'collection' || node.type === 'markdown'));
   const count = f.requests.length;
   const selected = await f.render({ action: item.action });
@@ -631,7 +635,7 @@ test('Account and repository utilities stay in menus and manual repository entry
   const opened = await f.render({ action: 'open-repo', values: { 'manual-repo': 'bob/other' } });
   assert.match(texts(opened), /bob\/other/);
   assert.ok(!nodes(opened).some(node => node.id === 'manual-repo'));
-  assert.equal(new URL(f.requests.at(-1).url).pathname, '/repos/bob/other/issues');
+  assert.equal(new URL(apiRequests(f).at(-1).url).pathname, '/repos/bob/other/issues');
 });
 
 test('Search repository and status filters stay with the issue list while account actions remain in its menu', async () => {
@@ -720,7 +724,7 @@ test('Sidebar rows stay compact while the full detail keeps every review label',
   const item = initial.children[0].items[0];
   assert.equal(item.type, 'navigationItem');
   assert.equal(item.text, 'Keep all review labels');
-  assert.match(item.subtitle, /alice\/project.*#7/);
+  assert.match(item.subtitle, /#7.*alice\/project/);
   assert.ok(!nodes(initial.children[1]).some(node => node.type === 'markdown'));
   const requestCount = f.requests.length;
   const detail = (await f.render({ action: item.action })).children[1];
@@ -766,10 +770,10 @@ test('An empty GitHub view has one recovery state and changing API state retriev
   assert.ok(nodes(empty).some(node => node.action === 'all-states'));
   const all = await f.render({ action: 'all-states' });
   assert.match(texts(all), /A closed issue/);
-  assert.equal(new URL(f.requests.at(-1).url).searchParams.get('state'), 'all');
+  assert.equal(new URL(apiRequests(f).at(-1).url).searchParams.get('state'), 'all');
   const item = nodes(all).find(node => node.id === 'item-alice/project/1');
-  assert.equal(item.symbol, 'checkmark.circle');
-  assert.equal(item.tone, 'accent');
+  assert.equal(item.children[0].symbol, 'checkmark.circle');
+  assert.equal(item.children[0].tone, 'accent');
 });
 
 test('A stale repository failure cannot replace the newest repository or its selected details', async () => {
@@ -814,7 +818,7 @@ test('Fast Issues PR and state changes ignore late results and failures from the
   const final = await earlier;
   assert.equal(nodes(final).find(node => node.id === 'status').value, 'all');
   assert.doesNotMatch(texts(final), /not found|Initial Issue/);
-  assert.equal(nodes(final).find(node => node.id === 'item-alice/project/2').symbol, 'arrow.triangle.merge');
+  assert.equal(nodes(final).find(node => node.id === 'item-alice/project/2').children[0].symbol, 'arrow.triangle.merge');
 });
 
 test('The current data error remains recoverable after a local search during its request', async () => {
@@ -928,7 +932,7 @@ test('The sidebar lists account items and repository selection narrows the exist
   assert.deepEqual(Array.from(switched.children[0].items, item => [item.text, item.action]),
     [['PR in team/second', 'item:item-team/second/7']]);
   assert.equal(new URL(f.requests.at(-1).url).pathname, '/repos/team/second/pulls');
-  assert.ok(f.requests.every(request => request.headers.Authorization === 'Bearer test_token'));
+  assert.ok(apiRequests(f).every(request => request.headers.Authorization === 'Bearer test_token'));
 });
 
 test('Repository pagination expands the optional filter without replacing the issue list', async () => {

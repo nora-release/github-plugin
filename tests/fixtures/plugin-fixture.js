@@ -11,7 +11,7 @@ const repo = (name = 'alice/project', id = 1) => ({ id, full_name: name, private
 const issue = (number, title, extra = {}) => ({ id: number, number, title, body: 'Description', state: 'open', user: { login: 'alice' }, html_url: `https://github.com/alice/project/issues/${number}`, repository_url: 'https://api.github.com/repos/alice/project', ...extra });
 const nodes = view => [view, ...(view.children || []).flatMap(nodes), ...(view.items || []).flatMap(nodes)];
 const texts = view => nodes(view).flatMap(node => [node.text, node.subtitle].filter(Boolean)).join('\n');
-function fixture({ saved = null, locale = 'en', now = () => Date.now(), beforeSave = async () => {}, route = async url => {
+function fixture({ saved = null, locale = 'en', now = () => Date.now(), beforeSave = async () => {}, ownerAvatarRoute = null, route = async url => {
   if (url.pathname === '/user') return body({ login: 'alice' });
   if (url.pathname === '/user/repos') return body([repo()]);
   const scoped = /^\/repos\/([^/]+\/[^/]+)\/(issues|pulls)(?:\/([1-9][0-9]*))?$/.exec(url.pathname);
@@ -38,7 +38,14 @@ function fixture({ saved = null, locale = 'en', now = () => Date.now(), beforeSa
       drafts.push(draft);
       return true;
     }
-    if (method === 'network.request') { requests.push(args); return route(new URL(args.url), args); }
+    if (method === 'network.request') {
+      requests.push(args);
+      const url = new URL(args.url);
+      if (url.hostname === 'avatars.githubusercontent.com' && args.maximumResponseBytes === 8 * 1024) {
+        return ownerAvatarRoute ? ownerAvatarRoute(url, args) : body({}, 404);
+      }
+      return route(url, args);
+    }
     throw new Error(`Unexpected method: ${method}`);
   };
   class ClockDate extends Date { static now() { return now(); } }

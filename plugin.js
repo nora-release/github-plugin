@@ -20,7 +20,11 @@
     network: t('GitHub could not be reached. Try again.', '无法连接 GitHub，请重试。'),
     invalid: t('GitHub returned an invalid response. Try again.', 'GitHub 返回了无效结果，请重试。'),
   };
-  const state = { user: null, avatarBase64: null, avatarAccount: '', avatarURL: '', repos: [], repo: '', repoQuery: '', items: [], kind: 'issues', status: 'open', query: '', author: '', label: '', page: 1, repoPage: 1, moreItems: false, moreRepos: false, selected: null, detailsVisible: false, detailLoading: false, detailError: '', device: null, error: '', restored: false, showToken: false, showOtherRepository: false, manualRepository: '', itemsLoading: false, reposLoading: false };
+  const state = { user: null, avatarBase64: null, avatarAccount: '', avatarURL: '', repos: [], repo: '', repoQuery: '', items: [], kind: 'issues', status: 'open', query: '', author: '', label: '', page: 1, repoPage: 1, moreItems: false, moreRepos: false, selected: null, detailsVisible: false, detailLoading: false, detailError: '', device: null, error: '', itemLoadError: '', itemRetryAppend: false, restored: false, showToken: false, showOtherRepository: false, manualRepository: '', itemsLoading: false, reposLoading: false };
+  const ownerAvatars = new Map();
+  const ownerAvatarWaiters = [];
+  let activeOwnerAvatars = 0;
+  const maximumSidebarItems = 400;
   let generation = 0;
   let itemRevision = 0;
   let detailRevision = 0;
@@ -204,6 +208,7 @@
       const detail = normalizeItem(result.data, itemRepository(item));
       if (detail.number !== item.number || requestedKind === 'issues' && detail.pull_request) throw new Error(message.invalid);
       state.selected = { ...item, ...detail, id: item.id, repository: item.repository };
+      state.items = state.items.map(loaded => itemKey(loaded) === requestedKey ? state.selected : loaded);
     } catch (error) {
       if (isCurrent()) state.detailError = error?.message || message.network;
     } finally {
@@ -220,12 +225,13 @@
     const matches = items.filter(item => item.number === Number(numeric));
     return matches.length === 1 ? matches[0] : null;
   }
-  async function loadItems(append = false) {
+  async function loadItems(append = false, retry = false) {
+    if (append && (state.itemsLoading || !state.moreItems || !retry && (state.itemLoadError || state.query.trim() || state.author || state.label || filteredItems().length >= maximumSidebarItems))) return;
     const revision = ++itemRevision, current = generation;
     const requestedRepo = state.repo, requestedKind = state.kind, requestedStatus = state.status;
     const requestedPage = append ? state.page + 1 : 1;
     if (!append) { state.items = []; clearDetails(); state.moreItems = false; }
-    state.itemsLoading = true;
+    state.itemsLoading = true; state.itemLoadError = ''; state.itemRetryAppend = false;
     try {
       const result = await panelItems(requestedRepo, requestedKind, requestedStatus, requestedPage);
       if (current !== generation || revision !== itemRevision) return;
@@ -236,6 +242,7 @@
     } catch (error) {
       if (current !== generation || revision !== itemRevision) return;
       state.error = error?.message || message.network;
+      state.itemLoadError = state.error; state.itemRetryAppend = append;
       throw error;
     } finally {
       if (current === generation && revision === itemRevision) state.itemsLoading = false;
@@ -301,9 +308,81 @@
     })();
     return operation.promise;
   }
+  function ownerAvatarSource(item) {
+    const name = itemRepository(item), owner = name.split('/')[0];
+    const repositories = state.repos.filter(repo => typeof repo.full_name === 'string' &&
+      repo.full_name.split('/')[0].toLowerCase() === owner.toLowerCase());
+    const owners = [repositories.find(repo => repo.full_name.toLowerCase() === name.toLowerCase())?.owner,
+      ...repositories.map(repo => repo.owner), item.repository?.owner];
+    for (const account of owners) {
+      if (!account || typeof account.login === 'string' && account.login.toLowerCase() !== owner.toLowerCase()) continue;
+      const url = avatarURL(account.avatar_url);
+      if (url) return { owner: owner.toLowerCase(), url };
+    }
+    if (state.user?.login.toLowerCase() === owner.toLowerCase() && state.avatarURL) {
+      return { owner: owner.toLowerCase(), url: state.avatarURL, accountAvatar: true };
+    }
+    return { owner: owner.toLowerCase(), url: `https://avatars.githubusercontent.com/${owner}?s=64` };
+  }
+  async function withOwnerAvatarSlot(operation) {
+    if (activeOwnerAvatars === 4) await new Promise(resolve => ownerAvatarWaiters.push(resolve));
+    else activeOwnerAvatars++;
+    try { return await operation(); }
+    finally {
+      const next = ownerAvatarWaiters.shift();
+      if (next) next();
+      else activeOwnerAvatars--;
+    }
+  }
+  async function loadOwnerAvatars() {
+    const current = generation, user = state.user;
+    if (!user) return;
+    const sources = [...new Map(filteredItems().slice(0, maximumSidebarItems).map(item => {
+      const source = ownerAvatarSource(item);
+      return [source.owner, source];
+    })).values()].filter(source => ownerAvatars.get(source.owner)?.url !== source.url || ownerAvatars.get(source.owner)?.promise).slice(0, 16);
+    const load = async source => {
+      if (current !== generation || state.user !== user) return;
+      const cached = ownerAvatars.get(source.owner);
+      if (cached?.url === source.url) return cached.promise;
+      if (ownerAvatars.size >= 512) {
+        for (const [owner, entry] of ownerAvatars) {
+          if (!entry.promise) { ownerAvatars.delete(owner); break; }
+        }
+      }
+      const entry = { url: source.url, base64: null, promise: null };
+      ownerAvatars.set(source.owner, entry);
+      if (source.accountAvatar) { entry.base64 = state.avatarBase64; return; }
+      entry.promise = withOwnerAvatarSlot(async () => {
+        try {
+          if (current !== generation || state.user !== user || ownerAvatars.get(source.owner) !== entry) return;
+          const response = await http(source.url, { headers: { Accept: 'image/png,image/jpeg' }, responseEncoding: 'base64',
+            maximumResponseBytes: 8 * 1024, timeoutSeconds: 3 });
+          if (current !== generation || state.user !== user || ownerAvatars.get(source.owner) !== entry) return;
+          const contentType = Object.entries(response.headers || {}).find(([key]) => key.toLowerCase() === 'content-type')?.[1];
+          if (response.status !== 200 || typeof contentType !== 'string' || !['image/png', 'image/jpeg'].includes(contentType.split(';')[0].trim().toLowerCase()) ||
+              typeof response.bodyBase64 !== 'string' || !response.bodyBase64 || response.bodyBase64.length > Math.ceil(8 * 1024 / 3) * 4) return;
+          const validated = node('navigationItem', { avatarBase64: response.bodyBase64 });
+          const padding = response.bodyBase64.endsWith('==') ? 2 : response.bodyBase64.endsWith('=') ? 1 : 0;
+          if (response.bodyBase64.length / 4 * 3 - padding > 8 * 1024) return;
+          entry.base64 = validated.avatarBase64 || null;
+        } catch {
+          // Optional owner images must never prevent reading or paging GitHub work items.
+        } finally {
+          entry.promise = null;
+        }
+      });
+      return entry.promise;
+    };
+    let index = 0;
+    await Promise.all(Array.from({ length: Math.min(4, sources.length) }, async () => {
+      while (index < sources.length && current === generation && state.user === user) await load(sources[index++]);
+    }));
+  }
   function clearAccount() {
     state.user = null; state.repos = []; state.repo = ''; state.items = []; state.selected = null; state.device = null;
     state.avatarBase64 = null; state.avatarAccount = ''; state.avatarURL = ''; avatarOperation = null;
+    ownerAvatars.clear(); state.itemLoadError = ''; state.itemRetryAppend = false;
     state.moreItems = false; state.moreRepos = false;
     state.page = 1; state.repoPage = 1; state.query = ''; state.repoQuery = ''; state.author = ''; state.label = ''; state.kind = 'issues'; state.status = 'open';
     clearDetails(); state.showToken = false; state.showOtherRepository = false;
@@ -368,7 +447,7 @@
     if (item.merged_at || item.pull_request?.merged_at) return { text: t('Merged', '已合并'), symbol: 'arrow.triangle.merge', tone: 'accent' };
     if (item.state === 'closed') return { text: t('Closed', '已关闭'), symbol: state.kind === 'pulls' ? 'xmark.circle' : 'checkmark.circle', tone: state.kind === 'pulls' ? 'danger' : 'accent' };
     if (item.draft) return { text: t('Draft', '草稿'), symbol: 'circle.dashed', tone: 'muted' };
-    return { text: t('Open', '未关闭'), symbol: state.kind === 'pulls' ? 'arrow.triangle.pull' : 'circle.circle', tone: 'success' };
+    return { text: t('Open', '打开'), symbol: state.kind === 'pulls' ? 'arrow.triangle.pull' : 'circle.circle', tone: 'success' };
   }
   const short = (value, limit = 512) => Array.from(String(value ?? '')).slice(0, limit).join('');
   const itemLabels = item => (Array.isArray(item.labels) ? item.labels : []).map(label => typeof label === 'string' ? label : label?.name).filter(name => typeof name === 'string' && name).map(name => short(name, 128));
@@ -422,6 +501,12 @@
       bytes += size;
     }
     return characters.join('') + suffix;
+  }
+  function encodedViewSize(descriptor) {
+    const normalized = item => ({ ...item, options: item.options || [], disabled: item.disabled || false,
+      children: (item.children || []).map(normalized), items: (item.items || []).map(normalized) });
+    // Swift encodes decoded defaults and escapes slashes, including those inside inline Base64 images.
+    return utf8Size(JSON.stringify(normalized(descriptor)).replace(/\//g, '\\/'));
   }
   function draftForSelectedItem() {
     const item = state.selected;
@@ -478,7 +563,14 @@
     return node('picker', { id: 'repository', text: t('Repository', '仓库'), action: 'repository', value: state.repo,
       options: [{ value: '', text: t('All repositories', '所有仓库') }, ...names.map(value => ({ value, text: value }))] });
   }
-  function itemSidebar(visibleItems, totalItems) {
+  function feedToken() {
+    let hash = 2166136261;
+    for (const character of JSON.stringify([state.repo, state.kind, state.status, state.query, state.author, state.label])) {
+      hash = Math.imul(hash ^ character.codePointAt(0), 16777619);
+    }
+    return `${generation}:${itemRevision}:${state.page}:${hash >>> 0}`;
+  }
+  function itemSidebar(visibleItems, totalItems, avatarCount = visibleItems.length) {
     const children = [accountMenu(),
       node('sidebar', { id: 'view-navigation', value: `view-${state.kind}`, items: [
         node('navigationItem', { id: 'view-issues', text: 'Issues', symbol: 'circle.circle', action: 'kind:issues' }),
@@ -486,22 +578,30 @@
       ] }), node('textField', { id: 'query', action: 'query',
         placeholder: t('Search loaded items', '搜索已加载条目'), value: state.query, symbol: 'magnifyingglass' }),
       row([repositoryPicker(), filterMenu()])];
-    if (totalItems > visibleItems.length) children.push(styledText(t(
-      `Showing ${visibleItems.length} of ${totalItems} loaded matches. Search to find earlier items.`,
-      `显示 ${totalItems} 个已加载匹配中的 ${visibleItems.length} 条；搜索可查找此前条目。`)));
+    const reachedLimit = totalItems >= maximumSidebarItems || totalItems > visibleItems.length;
+    const hasLocalFilters = !!(state.query.trim() || state.author || state.label);
+    if (reachedLimit) children.push(styledText(t(
+      `Showing the first ${visibleItems.length} loaded matches. Narrow the repository or search to continue.`,
+      `显示前 ${visibleItems.length} 个已加载匹配；缩小仓库范围或搜索后可继续。`)));
+    if (state.moreItems && hasLocalFilters) children.push(styledText(t(
+      'Clear search or filters to continue loading by scrolling.', '清除搜索或筛选后可继续下拉加载。')));
     if (state.itemsLoading) children.push(node('progress', { text: t('Loading items…', '正在加载条目…') }));
-    if (state.error) children.push(node('badge', { text: short(state.error, 512), tone: 'danger' }),
+    const error = state.error || state.itemLoadError;
+    if (error) children.push(node('badge', { text: short(error, 512), tone: 'danger' }),
       button(t('Try again', '重试'), 'retry-load', state.itemsLoading, { symbol: 'arrow.clockwise' }));
     if (!visibleItems.length && !state.itemsLoading) children.push(styledText(
-      state.moreItems ? t('No matching items on the loaded pages. Load more to continue.', '已加载页面暂无匹配条目，可继续加载。')
+      state.moreItems ? t('No matching items on the loaded pages. Scroll down to continue.', '已加载页面暂无匹配条目，下拉可继续加载。')
         : state.query || state.author || state.label ? t('No matching loaded items.', '已加载条目中没有匹配结果。')
           : state.kind === 'pulls' ? t('No pull requests in this view.', '当前范围暂无 PR。') : t('No Issues in this view.', '当前范围暂无 Issues。')));
-    if (state.moreItems) children.push(button(t('Load more items', '加载更多条目'), 'more-items', state.itemsLoading, { symbol: 'arrow.down.circle' }));
     return node('sidebar', { id: 'item-navigation', value: state.selected && state.detailsVisible ? itemKey(state.selected) : '',
-      items: visibleItems.map(item => {
+      ...(state.moreItems && !state.itemsLoading && !state.itemLoadError && !reachedLimit && !hasLocalFilters
+        ? { loadMoreAction: 'more-items', loadMoreToken: feedToken() } : {}),
+      items: visibleItems.map((item, index) => {
         const itemState = itemStatus(item), key = itemKey(item);
+        const avatar = index < avatarCount ? ownerAvatars.get(ownerAvatarSource(item).owner)?.base64 : null;
         return node('navigationItem', { id: key, text: boundedText(String(item.title || ''), 512, '…'),
-          subtitle: `${itemRepository(item)} #${item.number}`, symbol: itemState.symbol, tone: itemState.tone, action: `item:${key}` });
+          subtitle: `#${item.number} · ${itemRepository(item)}`, symbol: 'person.crop.circle', tone: 'neutral', action: `item:${key}`,
+          ...(avatar ? { avatarBase64: avatar } : {}) }, [node('badge', itemState)]);
       }) }, children);
   }
   function filterMenu() {
@@ -546,14 +646,13 @@
   function emptyListView() {
     if (state.itemsLoading) return node('emptyState', { text: t('Loading from GitHub…', '正在从 GitHub 加载…'),
       subtitle: t('Fetching items from your accessible repositories.', '正在获取你可访问仓库中的条目。'), symbol: 'arrow.clockwise' }, [node('progress')]);
-    if (state.error) return node('emptyState', { text: t('Couldn’t load this view', '暂时无法加载'), subtitle: state.error, symbol: 'exclamationmark.circle' },
+    if (state.error || state.itemLoadError) return node('emptyState', { text: t('Couldn’t load this view', '暂时无法加载'), subtitle: state.error || state.itemLoadError, symbol: 'exclamationmark.circle' },
       [button(state.error === message.expired ? t('Reconnect GitHub', '重新连接 GitHub') : t('Try again', '重试'),
         state.error === message.expired ? 'begin-login' : 'retry-load', false, { appearance: 'primary' }), button(message.manage, 'manage')]);
     if (filteredItems().length) return node('emptyState', { text: state.kind === 'pulls' ? t('Select a pull request', '选择一条 PR') : t('Select an Issue', '选择一条 Issue'),
       subtitle: t('Choose an item in the sidebar to read its details or hand it to Nora.', '从侧边栏选择条目，查看详情或交给 Nora 处理。'), symbol: state.kind === 'pulls' ? 'arrow.triangle.pull' : 'circle.circle' });
-    if (state.moreItems) return node('emptyState', { text: t('No matching items on the loaded pages', '已加载页面暂无匹配条目'),
-      subtitle: t('More pages are available. Continue loading to find this category.', '还有更多页面，可继续加载查找此类条目。'), symbol: 'tray' },
-      [button(t('Load more items', '加载更多条目'), 'more-items', state.itemsLoading)]);
+    if (state.moreItems && !(state.query.trim() || state.author || state.label)) return node('emptyState', { text: t('No matching items on the loaded pages', '已加载页面暂无匹配条目'),
+      subtitle: t('Scroll down in the sidebar to load more items.', '在侧边栏下拉可继续加载条目。'), symbol: 'tray' });
     const filtered = state.query || state.author || state.label;
     return node('emptyState', { text: filtered ? t('No matching loaded items', '已加载条目中没有匹配结果')
       : state.kind === 'pulls' ? t('No pull requests in this view', '此视图暂无 PR') : t('No Issues in this view', '此视图暂无 Issues'),
@@ -564,7 +663,7 @@
   function view() {
     if (!state.user) return connectionView();
     const items = filteredItems();
-    let visibleItems = items.slice(-120);
+    let visibleItems = items.slice(0, maximumSidebarItems);
     const header = node('toolbar', {}, [column([styledText(state.repo || t('All repositories', '所有仓库'), 'caption'),
       styledText(state.kind === 'pulls' ? t('Pull requests', 'PR') : 'Issues', 'headline', 'neutral')]), node('spacer'),
       button(message.refresh, 'refresh', state.itemsLoading || state.reposLoading, { appearance: 'icon', symbol: 'arrow.clockwise' })]);
@@ -580,10 +679,22 @@
       main = state.selected && state.detailsVisible ? detailView() : column([header, emptyListView()]);
     }
     const properties = { id: 'github-workspace', action: 'close-detail', value: state.selected && state.detailsVisible ? itemKey(state.selected) : '' };
-    let sidebar = itemSidebar(visibleItems, items.length);
-    while (visibleItems.length > 1 && utf8Size(JSON.stringify({ type: 'workspace', ...properties, children: [sidebar, main] })) > 400 * 1024) {
-      visibleItems = visibleItems.slice(Math.ceil(visibleItems.length / 2));
-      sidebar = itemSidebar(visibleItems, items.length);
+    let avatarCount = visibleItems.length;
+    let sidebar = itemSidebar(visibleItems, items.length, avatarCount);
+    if (avatarCount > 0 && encodedViewSize({ type: 'workspace', ...properties, children: [sidebar, main] }) > 400 * 1024) {
+      let minimum = 0, maximum = avatarCount;
+      while (minimum < maximum) {
+        const candidate = Math.ceil((minimum + maximum) / 2);
+        const candidateSidebar = itemSidebar(visibleItems, items.length, candidate);
+        if (encodedViewSize({ type: 'workspace', ...properties, children: [candidateSidebar, main] }) <= 400 * 1024) minimum = candidate;
+        else maximum = candidate - 1;
+      }
+      avatarCount = minimum;
+      sidebar = itemSidebar(visibleItems, items.length, avatarCount);
+    }
+    while (visibleItems.length > 1 && encodedViewSize({ type: 'workspace', ...properties, children: [sidebar, main] }) > 400 * 1024) {
+      visibleItems = visibleItems.slice(0, Math.max(1, visibleItems.length - 20));
+      sidebar = itemSidebar(visibleItems, items.length, 0);
     }
     return node('workspace', properties, [sidebar, main]);
   }
@@ -616,7 +727,7 @@
       else if (action === 'refresh-repos') await loadRepositories();
       else if (action === 'retry-load') {
         if (!state.user) { state.restored = false; await restore(); }
-        else await loadItems();
+        else await loadItems(state.itemRetryAppend, true);
       }
       else if (action === 'more-repos') await loadRepositories(true);
       else if (action === 'more-items') await loadItems(true);
@@ -661,6 +772,7 @@
       }
       else if (action === 'open-item' && state.selected) await web(state.selected.html_url);
     } catch (error) { if (revision === renderRevision) state.error = error?.message || message.network; }
+    await loadOwnerAvatars();
     return view();
   });
   nora.registerCommand('com.nora.github.listRepositories', listRepositories);

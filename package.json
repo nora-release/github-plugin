@@ -1,10 +1,10 @@
 {
   "name": "@nora/github-plugin",
-  "version": "0.3.0",
+  "version": "0.4.0",
   "private": true,
   "type": "module",
   "packageManager": "pnpm@11.5.3",
   "engines": {"node": ">=24"},
   "scripts": {"test": "node --test tests/*.test.js", "check": "node --check plugin.js"},
-  "devDependencies": {"@nora/plugin-kit": "github:nora-release/plugin-kit#v0.6.0"}
+  "devDependencies": {"@nora/plugin-kit": "github:nora-release/plugin-kit#v0.7.0"}
 }
