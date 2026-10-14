@@ -56,6 +56,199 @@ function fixture({ saved = null, locale = 'en', now = () => Date.now(), beforeSa
   };
 }
 const connection = { token: 'test_token' };
+const avatarPNG = 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=';
+const avatarJPEG = '/9j/4AAQSkZJRgABAQEASABIAAD/2wBDAP//////////////////////////////////////////////////////////////////////////////////////2wBDAf//////////////////////////////////////////////////////////////////////////////////////wAARCAABAAEDASIAAhEBAxEB/8QAFQABAQAAAAAAAAAAAAAAAAAAAAX/xAAUEAEAAAAAAAAAAAAAAAAAAAAA/9oADAMBAAIQAxAAAAEf/8QAFBABAAAAAAAAAAAAAAAAAAAAAP/aAAgBAQABBQJ//8QAFBEBAAAAAAAAAAAAAAAAAAAAAP/aAAgBAwEBPwF//8QAFBEBAAAAAAAAAAAAAAAAAAAAAP/aAAgBAgEBPwF//8QAFBABAAAAAAAAAAAAAAAAAAAAAP/aAAgBAQAGPwJ//8QAFBABAAAAAAAAAAAAAAAAAAAAAP/aAAgBAQABPyF//9oADAMBAAIAAwAAABAf/8QAFBEBAAAAAAAAAAAAAAAAAAAAAP/aAAgBAwEBPxB//8QAFBEBAAAAAAAAAAAAAAAAAAAAAP/aAAgBAgEBPxB//8QAFBABAAAAAAAAAAAAAAAAAAAAAP/aAAgBAQABPxB//9k=';
+const accountHeader = view => view.children[0].children[0];
+const avatarResponse = (bodyBase64 = avatarPNG, status = 200, contentType = 'image/png') => ({
+  status, headers: { 'content-type': contentType }, bodyBase64,
+});
+
+test('The first sidebar row is the username menu with the real public avatar and no GitHub title', async () => {
+  const f = fixture({ saved: connection, route: async (url, args) => {
+    if (url.pathname === '/user') return body({ id: 1, login: 'alice', avatar_url: 'https://avatars.githubusercontent.com/u/1?v=4&s=512' });
+    if (url.hostname === 'avatars.githubusercontent.com') {
+      assert.equal(url.searchParams.get('s'), '64');
+      assert.equal(url.searchParams.get('v'), '4');
+      assert.equal(args.responseEncoding, 'base64');
+      assert.equal(args.maximumResponseBytes, 96 * 1024);
+      assert.equal(args.timeoutSeconds, 8);
+      assert.deepEqual(Object.keys(args.headers), ['Accept']);
+      assert.equal(args.headers.Accept, 'image/png,image/jpeg');
+      assert.equal(args.headers.Authorization, undefined);
+      assert.equal(args.headers.Cookie, undefined);
+      return avatarResponse();
+    }
+    if (url.pathname === '/user/repos') return body([repo()]);
+    return body([issue(1, 'Issue one')]);
+  } });
+  const view = await f.render({});
+  const account = accountHeader(view);
+  assert.equal(account.type, 'menu');
+  assert.equal(account.text, 'alice');
+  assert.equal(account.tone, 'neutral');
+  assert.equal(account.symbol, 'person.crop.circle');
+  assert.equal(account.avatarBase64, avatarPNG);
+  assert.notEqual(account.appearance, 'icon');
+  assert.ok(nodes(account).some(node => node.action === 'disconnect'));
+  assert.ok(!nodes(view.children[0]).some(node => node.type === 'toolbar' || node.text === 'GitHub'));
+  assert.match(texts(view), /Issue one/);
+  assert.doesNotMatch(JSON.stringify(view), /test_token|Bearer|avatar_url|avatars\.githubusercontent\.com/);
+  assert.equal(f.requests.filter(request => request.responseEncoding === 'base64').length, 1);
+});
+
+test('Missing or untrusted avatar URLs keep the account placeholder without requesting another website', async () => {
+  for (const avatarURL of [undefined, '', 'http://avatars.githubusercontent.com/u/1',
+    'https://github.com/u/1', 'https://avatars.githubusercontent.com.evil.test/u/1',
+    'https://name:secret@avatars.githubusercontent.com/u/1', 'https://avatars.githubusercontent.com:444/u/1',
+    'https://avatars.githubusercontent.com/u/1#fragment', 'https://avatars.githubusercontent.com\\@evil.test/u/1']) {
+    const f = fixture({ saved: connection, route: async url => {
+      if (url.pathname === '/user') return body({ login: 'alice', avatar_url: avatarURL });
+      if (url.pathname === '/user/repos') return body([repo()]);
+      return body([issue(1, 'Issue one')]);
+    } });
+    const view = await f.render({});
+    assert.equal(accountHeader(view).text, 'alice');
+    assert.equal(accountHeader(view).symbol, 'person.crop.circle');
+    assert.equal(accountHeader(view).avatarBase64, undefined);
+    assert.match(texts(view), /Issue one/);
+    assert.equal(f.requests.filter(request => request.responseEncoding === 'base64').length, 0);
+    assert.ok(f.requests.every(request => new URL(request.url).hostname === 'api.github.com'));
+  }
+});
+
+test('Unavailable malformed oversized and non-image avatars never fail the connected account', async () => {
+  const responses = [
+    () => { throw new Error('Private transport error'); },
+    () => avatarResponse(avatarPNG, 404),
+    () => avatarResponse(avatarPNG, 200, 'text/html'),
+    () => avatarResponse('not base64'),
+    () => avatarResponse('AB=='),
+    () => avatarResponse(Buffer.alloc(96 * 1024 + 1).toString('base64')),
+    () => avatarResponse(''),
+  ];
+  for (const response of responses) {
+    const f = fixture({ saved: connection, route: async url => {
+      if (url.pathname === '/user') return body({ login: 'alice', avatar_url: 'https://avatars.githubusercontent.com/u/1' });
+      if (url.hostname === 'avatars.githubusercontent.com') return response();
+      if (url.pathname === '/user/repos') return body([repo()]);
+      return body([issue(1, 'Issue one')]);
+    } });
+    const view = await f.render({});
+    assert.equal(accountHeader(view).text, 'alice');
+    assert.equal(accountHeader(view).avatarBase64, undefined);
+    assert.match(texts(view), /Issue one/);
+    assert.doesNotMatch(texts(view), /Private transport|invalid response|could not be reached/);
+    await f.render({ action: 'refresh-repos' });
+    assert.equal(f.requests.filter(request => request.responseEncoding === 'base64').length, 1);
+  }
+});
+
+test('The public avatar is cached across filtering repository refreshes and Issues PR switches', async () => {
+  const f = fixture({ saved: connection, route: async url => {
+    if (url.pathname === '/user') return body({ login: 'alice', avatar_url: 'https://avatars.githubusercontent.com:443/u/1?%73=900&s=32&v=4' });
+    if (url.hostname === 'avatars.githubusercontent.com') {
+      assert.deepEqual(url.searchParams.getAll('s'), ['64']);
+      return avatarResponse(avatarJPEG, 200, 'image/jpeg; charset=binary');
+    }
+    if (url.pathname === '/user/repos') return body([repo()]);
+    return body([issue(1, 'Issue one')]);
+  } });
+  for (const event of [{}, { action: 'query', values: { query: 'Issue' } },
+    { action: 'refresh-repos' }, { action: 'kind:pulls' }, { action: 'refresh' }]) {
+    assert.equal(accountHeader(await f.render(event)).avatarBase64, avatarJPEG);
+  }
+  assert.equal(f.requests.filter(request => request.responseEncoding === 'base64').length, 1);
+});
+
+test('A token connection also loads the public avatar while repository loading runs in parallel', async () => {
+  const started = deferred(), release = deferred();
+  let repositoriesLoaded = false;
+  const f = fixture({ route: async (url, args) => {
+    if (url.pathname === '/user') return body({ login: 'alice', avatar_url: 'https://avatars.githubusercontent.com/u/1' });
+    if (url.hostname === 'avatars.githubusercontent.com') {
+      assert.equal(args.headers.Authorization, undefined);
+      started.resolve();
+      await release.promise;
+      return avatarResponse();
+    }
+    if (url.pathname === '/user/repos') { repositoriesLoaded = true; return body([repo()]); }
+    return body([issue(1, 'Issue one')]);
+  } });
+  const connecting = f.render({ action: 'connect-token', values: { token: 'test_token' } });
+  await started.promise;
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal(repositoriesLoaded, true);
+  release.resolve();
+  const view = await connecting;
+  assert.equal(accountHeader(view).avatarBase64, avatarPNG);
+  assert.match(texts(view), /Issue one/);
+  assert.equal(JSON.parse(f.stored()).token, 'test_token');
+});
+
+test('A completed browser device login loads its own public avatar without passing its token', async () => {
+  let now = 0;
+  const f = fixture({ now: () => now, route: async (url, args) => {
+    if (url.pathname === '/login/device/code') return body(device());
+    if (url.pathname === '/login/oauth/access_token') return body({ access_token: 'device_token', token_type: 'bearer' });
+    if (url.pathname === '/user') return body({ login: 'alice', avatar_url: 'https://avatars.githubusercontent.com/u/1' });
+    if (url.hostname === 'avatars.githubusercontent.com') {
+      assert.equal(args.headers.Authorization, undefined);
+      return avatarResponse();
+    }
+    if (url.pathname === '/user/repos') return body([repo()]);
+    return body([issue(1, 'Issue one')]);
+  } });
+  await f.render({ action: 'begin-login' });
+  now = 6000;
+  const view = await f.render({ action: 'finish-login' });
+  assert.equal(accountHeader(view).text, 'alice');
+  assert.equal(accountHeader(view).avatarBase64, avatarPNG);
+  assert.equal(JSON.parse(f.stored()).token, 'device_token');
+});
+
+test('An old avatar response cannot replace the newer accounts avatar or username', async () => {
+  const started = deferred(), release = deferred();
+  const f = fixture({ route: async (url, args) => {
+    if (url.pathname === '/user') {
+      const older = args.headers.Authorization === 'Bearer older_token';
+      return body({ id: older ? 1 : 2, login: older ? 'alice' : 'bob', avatar_url: `https://avatars.githubusercontent.com/u/${older ? 1 : 2}` });
+    }
+    if (url.hostname === 'avatars.githubusercontent.com') {
+      assert.equal(args.headers.Authorization, undefined);
+      if (url.pathname === '/u/1') { started.resolve(); await release.promise; return avatarResponse(); }
+      return avatarResponse(avatarJPEG, 200, 'image/jpeg');
+    }
+    if (url.pathname === '/user/repos') return body([repo()]);
+    return body([issue(1, 'Issue one')]);
+  } });
+  const older = f.render({ action: 'connect-token', values: { token: 'older_token' } });
+  await started.promise;
+  const current = await f.render({ action: 'connect-token', values: { token: 'newer_token' } });
+  assert.equal(accountHeader(current).text, 'bob');
+  assert.equal(accountHeader(current).avatarBase64, avatarJPEG);
+  release.resolve();
+  const late = await older;
+  assert.equal(accountHeader(late).text, 'bob');
+  assert.equal(accountHeader(late).avatarBase64, avatarJPEG);
+  assert.equal(JSON.parse(f.stored()).token, 'newer_token');
+  assert.equal(f.requests.filter(request => request.responseEncoding === 'base64').length, 2);
+});
+
+test('Disconnect clears the avatar and a new connection fetches its own copy', async () => {
+  const f = fixture({ saved: connection, route: async url => {
+    if (url.pathname === '/user') return body({ login: 'alice', avatar_url: 'https://avatars.githubusercontent.com/u/1' });
+    if (url.hostname === 'avatars.githubusercontent.com') return avatarResponse();
+    if (url.pathname === '/user/repos') return body([repo()]);
+    return body([issue(1, 'Issue one')]);
+  } });
+  assert.equal(accountHeader(await f.render({})).avatarBase64, avatarPNG);
+  const disconnected = await f.render({ action: 'disconnect' });
+  assert.equal(disconnected.type, 'emptyState');
+  assert.ok(nodes(disconnected).every(node => node.avatarBase64 === undefined));
+  assert.equal(f.stored(), null);
+  assert.equal(accountHeader(await f.render({ action: 'connect-token', values: { token: 'new_token' } })).avatarBase64, avatarPNG);
+  assert.equal(f.requests.filter(request => request.responseEncoding === 'base64').length, 2);
+});
 test('Script manifest has no native extension or signing identity', async () => {
   const manifest = JSON.parse(await fs.readFile(new URL('../nora-plugin.json', import.meta.url), 'utf8'));
   assert.equal(manifest.runtime, 'script');
@@ -468,9 +661,10 @@ test('One workspace toolbar keeps repository context search and filters while ac
   assert.ok(nodes(toolbar).some(node => node.action === 'refresh'));
   assert.ok(!nodes(main).some(node => node.action === 'disconnect' || node.action === 'show-other-repo'));
   assert.doesNotMatch(texts(main), /\d+ of \d+ loaded/);
-  assert.equal(sidebar.children[0].type, 'toolbar');
-  const account = nodes(sidebar.children[0]).find(node => node.type === 'menu');
+  assert.equal(sidebar.children[0].type, 'menu');
+  const account = sidebar.children[0];
   assert.equal(account.text, 'alice');
+  assert.notEqual(account.appearance, 'icon');
   for (const action of ['show-other-repo', 'manage', 'refresh-repos', 'disconnect']) {
     assert.ok(nodes(account).some(node => node.action === action), action);
   }

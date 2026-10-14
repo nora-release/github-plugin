@@ -20,11 +20,12 @@
     network: t('GitHub could not be reached. Try again.', '无法连接 GitHub，请重试。'),
     invalid: t('GitHub returned an invalid response. Try again.', 'GitHub 返回了无效结果，请重试。'),
   };
-  const state = { user: null, repos: [], repo: '', repoQuery: '', items: [], kind: 'issues', status: 'open', query: '', author: '', label: '', page: 1, repoPage: 1, moreItems: false, moreRepos: false, selected: null, detailsVisible: false, device: null, error: '', restored: false, showToken: false, showOtherRepository: false, manualRepository: '', itemsLoading: false, reposLoading: false };
+  const state = { user: null, avatarBase64: null, avatarAccount: '', avatarURL: '', repos: [], repo: '', repoQuery: '', items: [], kind: 'issues', status: 'open', query: '', author: '', label: '', page: 1, repoPage: 1, moreItems: false, moreRepos: false, selected: null, detailsVisible: false, device: null, error: '', restored: false, showToken: false, showOtherRepository: false, manualRepository: '', itemsLoading: false, reposLoading: false };
   let generation = 0;
   let itemRevision = 0;
   let repoRevision = 0;
   let refreshOperation = null;
+  let avatarOperation = null;
   let credentialWrites = Promise.resolve();
   let renderRevision = 0;
   const node = (type, properties = {}, children = []) => nora.ui.node(type, properties, children);
@@ -57,9 +58,12 @@
   });
   const connectionChanged = () => new Error(t('The GitHub connection changed. Try again.', 'GitHub 连接已更改，请重试。'));
   const form = fields => Object.entries(fields).map(([key, value]) => `${encodeURIComponent(key)}=${encodeURIComponent(value)}`).join('&');
-  async function http(url, { method = 'GET', headers = {}, body } = {}) {
+  async function http(url, { method = 'GET', headers = {}, body, responseEncoding, maximumResponseBytes, timeoutSeconds } = {}) {
     let response;
-    try { response = await nora.request('network.request', { url, method, headers, ...(body === undefined ? {} : { body }) }); }
+    try { response = await nora.request('network.request', { url, method, headers, ...(body === undefined ? {} : { body }),
+      ...(responseEncoding === undefined ? {} : { responseEncoding }),
+      ...(maximumResponseBytes === undefined ? {} : { maximumResponseBytes }),
+      ...(timeoutSeconds === undefined ? {} : { timeoutSeconds }) }); }
     catch { throw new Error(message.network); }
     if (!response || !Number.isInteger(response.status)) throw new Error(message.invalid);
     return response;
@@ -192,8 +196,50 @@
       if (current === generation && revision === repoRevision) state.reposLoading = false;
     }
   }
+  function avatarURL(value) {
+    if (typeof value !== 'string' || value.length > 8192 || /[\\\s\x00-\x1f\x7f]/.test(value)) return '';
+    const match = /^https:\/\/([^/?#]+)(\/[^?#]*)?(?:\?([^#]*))?$/i.exec(value);
+    if (!match || !['avatars.githubusercontent.com', 'avatars.githubusercontent.com:443'].includes(match[1].toLowerCase())) return '';
+    const query = [];
+    for (const parameter of (match[3] || '').split('&')) {
+      if (!parameter) continue;
+      let key;
+      try { key = decodeURIComponent(parameter.split('=')[0]); } catch { return ''; }
+      if (key.toLowerCase() !== 's') query.push(parameter);
+    }
+    query.push('s=64');
+    return `https://avatars.githubusercontent.com${match[2] || '/'}?${query.join('&')}`;
+  }
+  async function loadAvatar() {
+    const current = generation, user = state.user;
+    if (!user) return;
+    const account = `${user.id ?? ''}:${user.login}`, url = avatarURL(user.avatar_url);
+    if (state.avatarAccount === account && state.avatarURL === url) return avatarOperation?.promise;
+    state.avatarAccount = account; state.avatarURL = url; state.avatarBase64 = null;
+    if (!url) return;
+    const operation = { promise: null };
+    avatarOperation = operation;
+    operation.promise = (async () => {
+      try {
+        const response = await http(url, { headers: { Accept: 'image/png,image/jpeg' }, responseEncoding: 'base64',
+          maximumResponseBytes: 96 * 1024, timeoutSeconds: 8 });
+        if (current !== generation || state.user !== user || state.avatarAccount !== account || state.avatarURL !== url || avatarOperation !== operation) return;
+        const contentType = Object.entries(response.headers || {}).find(([key]) => key.toLowerCase() === 'content-type')?.[1];
+        if (response.status !== 200 || typeof contentType !== 'string' || !['image/png', 'image/jpeg'].includes(contentType.split(';')[0].trim().toLowerCase()) ||
+            typeof response.bodyBase64 !== 'string' || !response.bodyBase64) return;
+        const validated = node('menu', { text: user.login, avatarBase64: response.bodyBase64 });
+        state.avatarBase64 = validated.avatarBase64 || null;
+      } catch {
+        // Account navigation remains usable when the optional public avatar is unavailable.
+      } finally {
+        if (avatarOperation === operation) avatarOperation = null;
+      }
+    })();
+    return operation.promise;
+  }
   function clearAccount() {
     state.user = null; state.repos = []; state.repo = ''; state.items = []; state.selected = null; state.device = null;
+    state.avatarBase64 = null; state.avatarAccount = ''; state.avatarURL = ''; avatarOperation = null;
     state.moreItems = false; state.moreRepos = false;
     state.page = 1; state.repoPage = 1; state.query = ''; state.repoQuery = ''; state.author = ''; state.label = ''; state.kind = 'issues'; state.status = 'open';
     state.detailsVisible = false; state.showToken = false; state.showOtherRepository = false;
@@ -209,7 +255,7 @@
     if (current !== generation) return;
     if (!result.data || typeof result.data.login !== 'string' || !result.data.login) throw new Error(message.invalid);
     state.user = result.data;
-    await loadRepositories();
+    await Promise.all([loadRepositories(), loadAvatar()]);
   }
   async function beginLogin() {
     const current = ++generation;
@@ -241,7 +287,7 @@
     if (!user || typeof user.login !== 'string' || !user.login) throw new Error(message.invalid);
     if (!await saveForGeneration(saved, current) || state.device !== device) return;
     clearAccount(); state.user = user; state.restored = true;
-    await loadRepositories();
+    await Promise.all([loadRepositories(), loadAvatar()]);
   }
   async function connectToken(value) {
     if (!validToken(value)) throw new Error(t('Enter a valid GitHub access token.', '请输入有效的 GitHub 访问 token。'));
@@ -252,7 +298,7 @@
     if (!user || typeof user.login !== 'string' || !user.login) throw new Error(message.invalid);
     if (!await saveForGeneration({ token: value }, current)) return;
     clearAccount(); state.user = user; state.restored = true;
-    await loadRepositories();
+    await Promise.all([loadRepositories(), loadAvatar()]);
   }
   function itemStatus(item) {
     if (item.merged_at) return { text: t('Merged', '已合并'), symbol: 'arrow.triangle.merge', tone: 'accent' };
@@ -360,13 +406,14 @@
       button(message.manage, 'manage', false, { symbol: 'folder.badge.gearshape' }),
       button(t('Refresh repositories', '刷新仓库'), 'refresh-repos', state.reposLoading, { symbol: 'arrow.clockwise' }), node('divider'),
       button(t('Disconnect', '断开连接'), 'disconnect', false, { symbol: 'rectangle.portrait.and.arrow.right' })];
-    return node('menu', { text: short(state.user.login, 64), symbol: 'person.crop.circle', appearance: 'icon' }, children);
+    return node('menu', { text: state.user.login, tone: 'neutral', symbol: 'person.crop.circle',
+      ...(state.avatarBase64 ? { avatarBase64: state.avatarBase64 } : {}) }, children);
   }
   function repositorySidebar() {
     const query = state.repoQuery.trim().toLowerCase();
     const matchingRepos = state.repos.filter(repo => repo.full_name.toLowerCase().includes(query));
     const repos = matchingRepos.slice(0, 600);
-    const children = [node('toolbar', {}, [styledText('GitHub', 'headline', 'neutral'), node('spacer'), accountMenu()]),
+    const children = [accountMenu(),
       node('sidebar', { id: 'view-navigation', value: `view-${state.kind}`, items: [
         node('navigationItem', { id: 'view-issues', text: 'Issues', symbol: 'circle.circle', action: 'kind:issues' }),
         node('navigationItem', { id: 'view-pulls', text: t('Pull requests', 'PR'), symbol: 'arrow.triangle.pull', action: 'kind:pulls' })
