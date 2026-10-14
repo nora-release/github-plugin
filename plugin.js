@@ -4,6 +4,11 @@
   const panelID = 'com.nora.github.panel';
   const clientID = 'Iv23liPZy7EARoSnYoYy';
   const connectionKey = 'connection';
+  const pullRequestIcons = {
+    open: '<svg xmlns="http://www.w3.org/2000/svg" width="32" height="32" viewBox="0 0 24 24"><!-- Icon from Huge Icons by Hugeicons - undefined --><g fill="none" stroke="currentColor" stroke-width="1.5"><path stroke-linecap="round" stroke-linejoin="round" d="M6 8v8m12 0v-4c0-2.828 0-4.243-.879-5.121C16.243 6 14.828 6 12 6h-1m0 0c0-.7 1.994-2.008 2.5-2.5M11 6c0 .7 1.994 2.008 2.5 2.5"/><circle cx="6" cy="18" r="2"/><circle cx="6" cy="6" r="2"/><circle cx="18" cy="18" r="2"/></g></svg>',
+    draft: '<svg xmlns="http://www.w3.org/2000/svg" width="32" height="32" viewBox="0 0 24 24"><!-- Icon from Huge Icons by Hugeicons - undefined --><g fill="none" stroke="currentColor" stroke-width="1.5"><path stroke-linecap="round" stroke-linejoin="round" d="M6 8v8"/><circle cx="6" cy="18" r="2"/><circle cx="6" cy="6" r="2"/><circle cx="18" cy="18" r="2"/><path stroke-linecap="round" d="M18.125 11H18m.25 0a.25.25 0 1 1-.5 0a.25.25 0 0 1 .5 0Zm-.125-5H18m.25 0a.25.25 0 1 1-.5 0a.25.25 0 0 1 .5 0Z"/></g></svg>',
+    closed: '<svg xmlns="http://www.w3.org/2000/svg" width="32" height="32" viewBox="0 0 24 24"><!-- Icon from Huge Icons by Hugeicons - undefined --><g fill="none" stroke="currentColor" stroke-width="1.5"><path stroke-linecap="round" stroke-linejoin="round" d="M6 8v8m12-5v5"/><circle cx="6" cy="18" r="2"/><circle cx="6" cy="6" r="2"/><circle cx="18" cy="18" r="2"/><path stroke-linecap="round" stroke-linejoin="round" d="m20 4l-2 2m0 0l-2 2m2-2l2 2m-2-2l-2-2"/></g></svg>',
+  };
   const isChinese = /^zh/i.test(nora.locale || '');
   const t = (en, zh) => isChinese ? zh : en;
   const message = {
@@ -444,10 +449,14 @@
     await Promise.all([loadRepositories(), loadAvatar(), loadItems()]);
   }
   function itemStatus(item) {
+    const isPullRequest = state.kind === 'pulls';
     if (item.merged_at || item.pull_request?.merged_at) return { text: t('Merged', '已合并'), symbol: 'arrow.triangle.merge', tone: 'accent' };
-    if (item.state === 'closed') return { text: t('Closed', '已关闭'), symbol: state.kind === 'pulls' ? 'xmark.circle' : 'checkmark.circle', tone: state.kind === 'pulls' ? 'danger' : 'accent' };
-    if (item.draft) return { text: t('Draft', '草稿'), symbol: 'circle.dashed', tone: 'muted' };
-    return { text: t('Open', '打开'), symbol: state.kind === 'pulls' ? 'arrow.triangle.pull' : 'circle.circle', tone: 'success' };
+    if (item.state === 'closed') return { text: t('Closed', '已关闭'), symbol: isPullRequest ? 'xmark.circle' : 'checkmark.circle', tone: isPullRequest ? 'danger' : 'accent',
+      ...(isPullRequest ? { iconSVG: pullRequestIcons.closed } : {}) };
+    if (item.draft) return { text: t('Draft', '草稿'), symbol: 'circle.dashed', tone: 'muted',
+      ...(isPullRequest ? { iconSVG: pullRequestIcons.draft } : {}) };
+    return { text: t('Open', '打开'), symbol: isPullRequest ? 'arrow.triangle.pull' : 'circle.circle', tone: 'success',
+      ...(isPullRequest ? { iconSVG: pullRequestIcons.open } : {}) };
   }
   const short = (value, limit = 512) => Array.from(String(value ?? '')).slice(0, limit).join('');
   const itemLabels = item => (Array.isArray(item.labels) ? item.labels : []).map(label => typeof label === 'string' ? label : label?.name).filter(name => typeof name === 'string' && name).map(name => short(name, 128));
@@ -627,7 +636,7 @@
     const item = state.selected, status = itemStatus(item), date = itemDate(item);
     const children = [
       node('toolbar', {}, [styledText(`${itemRepository(item)} · ${state.kind === 'pulls' ? 'PR' : 'Issue'} #${item.number}`, 'monospaced'),
-        node('badge', { text: status.text, tone: status.tone }), node('spacer'),
+        node('badge', status), node('spacer'),
         button(t('View on GitHub', '在 GitHub 查看'), 'open-item', false, { appearance: 'icon', symbol: 'arrow.up.forward.square' }),
         button(t('Close details', '关闭详情'), 'close-detail', false, { appearance: 'icon', symbol: 'xmark' })]),
       column([
