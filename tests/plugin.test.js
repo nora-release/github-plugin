@@ -699,6 +699,7 @@ test('A selected PR has one detail header and a complete Markdown description be
   assert.equal(nodes(detail).find(node => node.type === 'markdown').text, '## Changes\nPreserve the selection.\n\n- Keep keyboard focus.');
   assert.ok(nodes(detail).some(node => node.action === 'handoff-item' && node.appearance === 'primary'));
   assert.equal(f.drafts.length, 0);
+  const loadedRequestCount = f.requests.length;
   await f.render({ action: 'handoff-item' });
   assert.equal(f.drafts.length, 1);
   assert.match(f.drafts[0].context, /Repository: alice\/project\nType: PR\nNumber: #42/);
@@ -706,8 +707,9 @@ test('A selected PR has one detail header and a complete Markdown description be
   assert.ok(f.drafts[0].context.includes('## Changes\nPreserve the selection.\n\n- Keep keyboard focus.'));
   assert.equal(f.drafts[0].sourceURL, 'https://github.com/alice/project/pull/42');
   assert.doesNotMatch(JSON.stringify(f.drafts[0]), /test_token|Authorization|actionCapability/);
-  assert.equal(f.requests.length, requestCount + 1);
-  assert.equal(new URL(f.requests.at(-1).url).pathname, '/repos/alice/project/pulls/42');
+  assert.equal(f.requests.length, loadedRequestCount);
+  assert.equal(f.requests.slice(requestCount).filter(request => new URL(request.url).pathname === '/repos/alice/project/pulls/42').length, 1);
+  assert.ok(f.requests.slice(requestCount).every(request => request.method === 'GET'));
   assert.equal(f.stored(), connection);
   assert.equal(f.writes.length, 0);
 });

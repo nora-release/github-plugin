@@ -1,6 +1,595 @@
 /// <reference types="@nora/plugin-kit" />
 (() => {
   'use strict';
+  function createPullRequestDetails({ api, write, t, boundedText, githubURL, isCurrent, onUpdated }) {
+    const names = ['repository', 'comments', 'reviews', 'reviewComments', 'timeline', 'checks', 'statuses', 'workflows', 'commits', 'files'];
+    const pageSize = 30, maximumRows = 200;
+    const section = () => ({ items: [], loaded: false, loading: false, error: '', nextPage: null, notice: '' });
+    const invalid = () => new Error(t('GitHub returned an invalid PR response.', 'GitHub 返回了无效的 PR 结果。'));
+    const staleNotice = t('The PR changed. Refresh it and confirm again.', 'PR 已更改，请刷新后重新确认。');
+    let model = null, revision = 0, clearRevision = 0;
+    const commentOperations = new Map(), mergeOperations = new Map();
+    const shaFor = item => typeof item?.head?.sha === 'string' && /^[a-fA-F0-9]{40}$/.test(item.head.sha) ? item.head.sha.toLowerCase() : '';
+    function identity(item) {
+      const repo = item?.repository?.full_name;
+      if (typeof repo !== 'string' || repo.length > 200 || !/^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/.test(repo) || repo.split('/').some(part => part === '.' || part === '..') || !Number.isSafeInteger(item.number) || item.number < 1) throw invalid();
+      return { repo, number: item.number, key: `${repo}/${item.number}` };
+    }
+    const active = (record, generation = record.generation) => model === record && generation === revision && isCurrent(record.item);
+    const failure = error => error?.message || t('GitHub could not be reached. Try again.', '无法连接 GitHub，请重试。');
+    const pathFor = (record, name, page = 1) => {
+      const base = `/repos/${record.repo}`, pull = `${base}/pulls/${record.number}`, issue = `${base}/issues/${record.number}`;
+      const paths = { repository: base, comments: `${issue}/comments`, reviews: `${pull}/reviews`, reviewComments: `${pull}/comments`, timeline: `${issue}/timeline`, checks: `${base}/commits/${record.headSHA}/check-runs`, statuses: `${base}/commits/${record.headSHA}/status`, workflows: `${base}/actions/runs`, commits: `${pull}/commits`, files: `${pull}/files` };
+      if (name === 'repository') return paths[name];
+      return `${paths[name]}?per_page=${pageSize}&page=${page}${name === 'workflows' ? `&head_sha=${record.headSHA}` : ''}`;
+    };
+    function nextPage(headers, requestedPage) {
+      const link = headers?.link || headers?.Link || '';
+      return typeof link === 'string' && /(?:^|,)\s*<[^>]+>;\s*rel="next"/.test(link) && requestedPage < 10000 ? requestedPage + 1 : null;
+    }
+    function responseItems(name, data) {
+      if (name === 'repository') {
+        if (!data || typeof data !== 'object' || Array.isArray(data)) throw invalid();
+        return [];
+      }
+      const values = name === 'checks' ? data?.check_runs : name === 'statuses' ? data?.statuses : name === 'workflows' ? data?.workflow_runs : name === 'jobs' ? data?.jobs : data;
+      if (!Array.isArray(values) || values.some(item => !item || typeof item !== 'object' || Array.isArray(item))) throw invalid();
+      return values;
+    }
+    function deduplicate(name, items) {
+      const keys = new Map();
+      for (const item of items) {
+        const key = name === 'files' ? item.filename : name === 'commits' ? item.sha : item.id ?? item.node_id ?? (name === 'timeline' && item.event === 'committed' ? item.sha : undefined);
+        if (typeof key !== 'string' && !Number.isSafeInteger(key)) throw invalid();
+        if (typeof key === 'string' && (!key || key.length > 1024)) throw invalid();
+        keys.set(String(key), item);
+      }
+      return [...keys.values()];
+    }
+    async function load(record, name, { append = false, runID = null } = {}) {
+      const target = runID === null ? record.sections[name] : record.jobsByRun[runID];
+      if (!target || target.loading || !active(record) || append && !target.nextPage) return;
+      const operation = Symbol(name), head = record.headSHA;
+      const requestedPage = append ? target.nextPage : 1;
+      const requiresHead = ['checks', 'statuses', 'workflows', 'jobs'].includes(name);
+      if (requiresHead && !head) {
+        target.loaded = true; target.error = t('The latest commit is unavailable. Refresh this PR.', '无法获取最新提交，请刷新这条 PR。'); return;
+      }
+      target.operation = operation; target.loading = true; target.error = ''; target.notice = '';
+      const valid = () => active(record) && target.operation === operation && (!requiresHead || record.headSHA === head);
+      try {
+        const path = name === 'jobs' ? `/repos/${record.repo}/actions/runs/${runID}/jobs?per_page=${pageSize}&page=${requestedPage}` : pathFor(record, name, requestedPage);
+        const result = await api(path);
+        if (!valid()) return;
+        if (name === 'repository' && result.data?.full_name?.toLowerCase() !== record.repo.toLowerCase()) throw invalid();
+        const incoming = responseItems(name, result.data).filter(item => !requiresHead || !item.head_sha || item.head_sha.toLowerCase() === head);
+        const items = deduplicate(name, [...(append ? target.items : []), ...incoming]);
+        target.items = items.slice(0, maximumRows);
+        if (name === 'repository') target.data = result.data;
+        if (name === 'statuses') target.state = result.data.state;
+        target.loaded = true;
+        target.nextPage = nextPage(result.headers, requestedPage);
+        if (items.length >= maximumRows && (target.nextPage || items.length > maximumRows)) {
+          target.nextPage = null;
+          target.notice = t(`Showing the first ${maximumRows} entries. Open GitHub for the complete history.`, `已显示前 ${maximumRows} 条，完整记录请在 GitHub 查看。`);
+        }
+      } catch (error) {
+        if (valid()) target.error = failure(error);
+      } finally {
+        if (valid()) target.loading = false;
+      }
+    }
+    async function open(item, { preserveTab = false } = {}) {
+      const info = identity(item), previous = model;
+      const same = previous?.key === info.key;
+      const record = { ...info, item, headSHA: shaFor(item), tab: preserveTab && same ? previous.tab : 'discussion', generation: ++revision,
+        sections: Object.fromEntries(names.map(name => [name, section()])), jobsByRun: {},
+        comment: { fieldID: same ? previous.comment.fieldID : `pr-comment-${info.key}`, draft: same ? previous.comment.draft : '', error: same && previous.comment.uncertain ? previous.comment.error : '', notice: '', busy: commentOperations.has(info.key), uncertain: same ? previous.comment.uncertain : false },
+        merge: { pending: null, error: '', notice: '', busy: mergeOperations.has(info.key) } };
+      record.sections.repository.data = null;
+      model = record;
+      await Promise.all(['repository', 'reviews', 'comments', 'reviewComments', 'timeline', 'checks', 'statuses', 'workflows'].map(name => load(record, name)));
+      if (active(record) && ['commits', 'files'].includes(record.tab)) await load(record, record.tab);
+      return model;
+    }
+    async function selectTab(tab) {
+      if (!model || !['discussion', 'checks', 'commits', 'files'].includes(tab)) return;
+      const record = model;
+      record.tab = tab;
+      if (['commits', 'files'].includes(tab) && !record.sections[tab].loaded) await load(record, tab);
+    }
+    async function refresh(item = model?.item) {
+      if (!model || !item || identity(item).key !== model.key || !active(model)) return;
+      const record = model, generation = revision;
+      try {
+        const result = await api(`/repos/${record.repo}/pulls/${record.number}`);
+        if (!active(record, generation)) return;
+        const data = result.data;
+        if (!data || data.number !== record.number || !['open', 'closed'].includes(data.state)) throw invalid();
+        const updated = { ...record.item, ...data, repository: record.item.repository, id: record.item.id };
+        onUpdated(updated);
+        await open(updated, { preserveTab: true });
+      } catch (error) { if (active(record, generation)) record.merge.error = failure(error); }
+    }
+    async function more(name) {
+      if (!model || !names.includes(name)) return;
+      const target = model.sections[name];
+      if (target.nextPage) await load(model, name, { append: true });
+      else if (target.error || !target.loaded) await load(model, name);
+    }
+    async function jobs(runID) {
+      if (!model || !Number.isSafeInteger(runID) || runID < 1 || !model.sections.workflows.items.some(run => run.id === runID && shaFor({ head: { sha: run.head_sha } }) === model.headSHA)) return;
+      const record = model;
+      const existing = record.jobsByRun[runID];
+      if (!existing) record.jobsByRun[runID] = section();
+      const target = record.jobsByRun[runID];
+      if (target.loaded && !target.nextPage && !target.error) return;
+      await load(record, 'jobs', { runID, append: !!target.nextPage });
+    }
+    function setCommentDraft(text) {
+      if (!model || model.comment.busy || typeof text !== 'string') return;
+      if (text !== model.comment.draft) model.comment.uncertain = false;
+      model.comment.draft = text; model.comment.error = ''; model.comment.notice = '';
+    }
+    const byteSize = value => {
+      let size = 0;
+      for (const character of value) { const code = character.codePointAt(0); size += code <= 0x7f ? 1 : code <= 0x7ff ? 2 : code <= 0xffff ? 3 : 4; }
+      return size;
+    };
+    async function postComment({ authorized = false } = {}) {
+      const record = model;
+      if (!record || record.comment.busy || commentOperations.has(record.key) || !active(record)) return;
+      const comment = record.comment;
+      comment.error = ''; comment.notice = '';
+      if (!authorized) { comment.error = t('Choose Post comment to authorize this action.', '请点击“发表评论”以授权此操作。'); return; }
+      if (!comment.draft.trim()) { comment.error = t('Write a comment before posting.', '填写留言后才能发表。'); return; }
+      if (byteSize(comment.draft) > 64 * 1024) { comment.error = t('This comment exceeds 64 KiB. Shorten it before posting.', '留言超过 64 KiB，请缩短后发表。'); return; }
+      if (comment.uncertain) { comment.error = t('The previous comment may have been posted. Check GitHub before trying again.', '上一条留言可能已经发表，请先在 GitHub 确认，再尝试。'); return; }
+      const draft = comment.draft, generation = revision;
+      comment.busy = true; commentOperations.set(record.key, comment);
+      try {
+        const result = await write(`/repos/${record.repo}/issues/${record.number}/comments`, 'POST', { body: draft });
+        if (!active(record, generation)) return;
+        if (result.status !== 201 || !result.data || !Number.isSafeInteger(result.data.id) || result.data.id < 1 || typeof result.data.body !== 'string') {
+          const error = invalid(); error.status = result.status; error.uncertain = result.status === 201; throw error;
+        }
+        record.sections.comments.items = deduplicate('comments', [...record.sections.comments.items, result.data]).slice(-maximumRows);
+        comment.draft = ''; comment.fieldID = `pr-comment-${record.key}-${++clearRevision}`; comment.uncertain = false;
+        comment.notice = t('Comment posted.', '留言已发表。');
+      } catch (error) {
+        if (active(record, generation)) {
+          comment.uncertain = error?.uncertain === true || !Number.isInteger(error?.status);
+          comment.error = comment.uncertain ? t('The result could not be confirmed. Check GitHub before posting again; your draft is saved.', '无法确认发表结果。请先在 GitHub 确认后再发表；草稿已保留。') : failure(error);
+        }
+      } finally {
+        if (commentOperations.get(record.key) === comment) commentOperations.delete(record.key);
+        if (active(record, generation)) comment.busy = false;
+        else if (model?.key === record.key) model.comment.busy = false;
+      }
+    }
+    function mergeProblem(record, method, repositoryData = record.sections.repository.data) {
+      if (record.item.merged || record.item.merged_at || record.item.state !== 'open') return t('This PR is already closed or merged.', '这条 PR 已关闭或已合并。');
+      if (record.item.draft === true) return t('A draft PR cannot be merged.', '草稿 PR 不能合并。');
+      if (!record.headSHA) return t('The latest commit is unavailable. Refresh this PR.', '无法获取最新提交，请刷新这条 PR。');
+      if (!repositoryData || repositoryData.permissions?.push !== true) return t('Write access to this repository is required to merge.', '合并需要此仓库的写入权限。');
+      const setting = { merge: 'allow_merge_commit', squash: 'allow_squash_merge', rebase: 'allow_rebase_merge' }[method];
+      if (!setting || repositoryData[setting] !== true) return t('This merge method is not enabled for this repository.', '此仓库未启用该合并方式。');
+      if (record.item.mergeable === false) return t('This PR has conflicts. Resolve them before merging.', '这条 PR 存在冲突，请解决后再合并。');
+      return '';
+    }
+    function prepareMerge(method) {
+      const record = model;
+      if (!record || record.merge.busy || !active(record)) return;
+      record.merge.error = ''; record.merge.notice = ''; record.merge.pending = null;
+      const problem = mergeProblem(record, method);
+      if (problem) { record.merge.error = problem; return; }
+      record.merge.pending = { repo: record.repo, number: record.number, sha: record.headSHA, method };
+    }
+    function cancelMerge() {
+      if (!model || model.merge.busy) return;
+      model.merge.pending = null; model.merge.error = ''; model.merge.notice = '';
+    }
+    async function confirmMerge({ authorized = false } = {}) {
+      const record = model;
+      if (!record || record.merge.busy || mergeOperations.has(record.key) || !record.merge.pending || !active(record)) return;
+      const merge = record.merge, pending = merge.pending, generation = revision;
+      merge.error = ''; merge.notice = '';
+      if (!authorized) { merge.error = t('Choose Confirm merge to authorize this action.', '请点击“确认合并”以授权此操作。'); return; }
+      if (pending.repo !== record.repo || pending.number !== record.number || pending.sha !== record.headSHA) { merge.pending = null; merge.error = staleNotice; return; }
+      merge.busy = true; mergeOperations.set(record.key, merge);
+      let writeDispatched = false;
+      const valid = () => active(record, generation) && merge.pending === pending;
+      try {
+        const result = await api(`/repos/${record.repo}/pulls/${record.number}`);
+        if (!valid()) return;
+        if (!result.data || result.data.number !== record.number || !['open', 'closed'].includes(result.data.state)) throw invalid();
+        const fresh = { ...record.item, ...result.data, repository: record.item.repository, id: record.item.id };
+        if (shaFor(fresh) !== pending.sha || fresh.draft === true || fresh.state !== 'open' || fresh.merged || fresh.merged_at) {
+          record.item = fresh; record.headSHA = shaFor(fresh); onUpdated(fresh);
+          record.sections.checks = section(); record.sections.statuses = section(); record.sections.workflows = section(); record.jobsByRun = {};
+          merge.pending = null; merge.error = staleNotice; return;
+        }
+        const repositoryResult = await api(`/repos/${record.repo}`);
+        if (!valid()) return;
+        if (repositoryResult.data?.full_name?.toLowerCase() !== record.repo.toLowerCase()) throw invalid();
+        record.sections.repository.data = repositoryResult.data;
+        const problem = mergeProblem({ ...record, item: fresh }, pending.method, repositoryResult.data);
+        if (problem) { merge.pending = null; merge.error = problem; return; }
+        writeDispatched = true;
+        const response = await write(`/repos/${record.repo}/pulls/${record.number}/merge`, 'PUT', { sha: pending.sha, merge_method: pending.method });
+        if (!valid()) return;
+        if (response.status !== 200 || response.data?.merged !== true) {
+          merge.error = t('GitHub did not merge this PR. Check its requirements on GitHub.', 'GitHub 未合并这条 PR，请在 GitHub 检查合并要求。'); merge.pending = null; return;
+        }
+        record.item = { ...fresh, state: 'closed', merged: true, ...(typeof response.data.sha === 'string' ? { merge_commit_sha: response.data.sha } : {}) };
+        onUpdated(record.item);
+        merge.pending = null; merge.notice = t('PR merged.', 'PR 已合并。');
+      } catch (error) {
+        if (valid()) {
+          merge.pending = null;
+          merge.error = writeDispatched && (error?.uncertain === true || !Number.isInteger(error?.status)) ? t('The merge result could not be confirmed. Check GitHub before trying again.', '无法确认合并结果，请先在 GitHub 确认后再尝试。') : failure(error);
+        }
+      } finally {
+        if (mergeOperations.get(record.key) === merge) mergeOperations.delete(record.key);
+        if (active(record, generation)) merge.busy = false;
+        else if (model?.key === record.key) model.merge.busy = false;
+      }
+    }
+    function context() {
+      if (!model || !active(model)) return '';
+      const record = model, lines = [`PR #${record.number} · ${record.repo}`, `${t('Latest commit', '最新提交')}: ${record.headSHA || t('Unavailable', '不可用')}`];
+      const append = (label, target, describe) => {
+        lines.push(`${label}: ${target.error || (!target.loaded ? t('Not loaded', '尚未加载') : target.items.length ? `${target.items.length}${target.nextPage ? '+' : ''}` : t('No reports', '暂无记录'))}`);
+        if (target.loaded) lines.push(...target.items.slice(-8).map(describe));
+        if (target.notice) lines.push(target.notice);
+      };
+      append(t('Latest-commit CI checks', '最新提交的 CI 检查'), record.sections.checks, check => `- ${check.name || 'Check'}: ${check.conclusion || check.status || 'unknown'}`);
+      append(t('Commit statuses', '提交状态'), record.sections.statuses, status => `- ${status.context || 'Status'}: ${status.state || 'unknown'}`);
+      append('Actions', record.sections.workflows, run => `- ${run.name || 'Workflow'}: ${run.conclusion || run.status || 'unknown'}`);
+      append(t('Reviews', '审查'), record.sections.reviews, review => `- ${review.user?.login || 'Unknown'}: ${review.state || 'unknown'}${review.body ? ` · ${boundedText(String(review.body), 600, '…')}` : ''}`);
+      append(t('Comments', '留言'), record.sections.comments, comment => `- ${comment.user?.login || 'Unknown'}: ${boundedText(String(comment.body || ''), 800, '…')}`);
+      append(t('Inline comments', '行内留言'), record.sections.reviewComments, comment => `- ${comment.user?.login || 'Unknown'} · ${comment.path || ''}:${comment.line || comment.original_line || ''}: ${boundedText(String(comment.body || ''), 500, '…')}`);
+      append(t('Activity', '活动'), record.sections.timeline, event => `- ${event.event || 'unknown'} · ${event.actor?.login || event.user?.login || ''}`);
+      let url = '';
+      try { url = githubURL(record.item.html_url); } catch {}
+      if (url) lines.push(`${t('Source', '来源')}: ${url}`);
+      return boundedText(lines.join('\n'), 14 * 1024, '\n…');
+    }
+    return { get current() { return model; }, reset() { ++revision; model = null; }, open, selectTab, refresh, more, jobs, setCommentDraft, postComment, prepareMerge, confirmMerge, cancelMerge, context };
+  }
+  function createPullRequestView({ node, t, boundedText, displayedBody, short, itemStatus, itemDate }) {
+    const text = (value, textStyle = 'caption', tone = 'muted') => node('text', { text: boundedText(String(value ?? ''), 4096, '…'), textStyle, tone });
+    const column = children => node('column', {}, children);
+    const row = children => node('row', {}, children);
+    const badge = (label, tone = 'muted', symbol) => node('badge', { text: short(label, 512), tone, ...(symbol ? { symbol } : {}) });
+    const button = (label, action, properties = {}) => node('button', { text: short(label, 256), action, appearance: 'plain', ...properties });
+    const section = (model, name) => model.sections?.[name] || model[name] || { items: [], loaded: false, loading: false, error: '', nextPage: null };
+    const items = (model, name) => Array.isArray(section(model, name).items) ? section(model, name).items : [];
+    const prURL = model => `https://github.com/${model.repo}/pull/${model.number}`;
+    const safeURL = (url, fallback) => typeof url === 'string' && /^https:\/\/github\.com\/(?!\/)[^\s\\]+$/.test(url) ? url : fallback;
+    const openAction = (url, fallback) => {
+      const safe = safeURL(url, fallback), encoded = encodeURIComponent(safe);
+      const fallbackEncoded = encodeURIComponent(fallback);
+      return `pr-open:${encoded.length <= 246 ? encoded : fallbackEncoded.length <= 246 ? fallbackEncoded : encodeURIComponent('https://github.com/')}`;
+    };
+    const open = (model, label, url, suffix = '', properties = {}) => button(label, openAction(url, prURL(model) + suffix), { symbol: 'arrow.up.forward.square', ...properties });
+    const date = entry => itemDate({ updated_at: entry.submitted_at || entry.created_at || entry.completed_at || entry.started_at || entry.updated_at || entry.commit?.author?.date });
+    const account = entry => entry.user || entry.actor || entry.author || {};
+    const authorLabel = entry => short(account(entry).login || entry.commit?.author?.name || t('GitHub', 'GitHub'), 80);
+    const authorButton = (model, entry, fallback, label = authorLabel(entry)) => {
+      const author = account(entry), avatar = entry.avatarBase64 || author.avatarBase64;
+      return button(label, openAction(entry.html_url, fallback), { tone: 'neutral', ...(avatar ? { avatarBase64: avatar } : { symbol: 'person.crop.circle' }) });
+    };
+    const markdown = (value, maximum = 8 * 1024) => node('markdown', { text: boundedText(String(value || ''), maximum, '\n\n' + t('Content shortened. View on GitHub for the full text.', '内容已缩短，完整内容可在 GitHub 查看。')) });
+    const code = (value, language = '') => {
+      const body = boundedText(String(value || ''), 8 * 1024, '\n' + t('… Patch shortened.', '… 变更内容已缩短。'));
+      const runs = body.match(/`+/g) || [], fence = '`'.repeat(Math.max(3, ...runs.map(run => run.length + 1)));
+      return node('markdown', { text: `${fence}${language}\n${body}\n${fence}` });
+    };
+    const countNodes = value => 1 + (value.children || []).reduce((sum, child) => sum + countNodes(child), 0) + (value.items || []).reduce((sum, child) => sum + countNodes(child), 0);
+    const bytes = value => {
+      let result = 0;
+      for (const character of value) { const point = character.codePointAt(0); result += point <= 0x7f ? 1 : point <= 0x7ff ? 2 : point <= 0xffff ? 3 : 4; }
+      return result;
+    };
+    const encodedSize = value => {
+      const normalize = entry => ({ ...entry, options: entry.options || [], disabled: entry.disabled || false, children: (entry.children || []).map(normalize), items: (entry.items || []).map(normalize) });
+      return bytes(JSON.stringify(value.map(normalize)).replace(/\//g, '\\/'));
+    };
+    const fit = (model, header, cards, footer, suffix, preferRecent = false) => {
+      const overflow = [badge(t('More activity is available on GitHub.', '还有更多内容，可在 GitHub 查看。'), 'muted'), open(model, t('View complete history', '查看完整内容'), prURL(model) + suffix, suffix)];
+      const fixed = [...header, ...footer, ...overflow];
+      let nodes = fixed.reduce((sum, value) => sum + countNodes(value), 0), size = encodedSize(fixed);
+      const kept = [];
+      for (const card of preferRecent ? cards.slice().reverse() : cards) {
+        const nextNodes = countNodes(card), nextSize = encodedSize([card]);
+        if (nodes + nextNodes > 200 || size + nextSize > 185 * 1024) break;
+        kept.push(card); nodes += nextNodes; size += nextSize;
+      }
+      if (preferRecent) kept.reverse();
+      return [...header, ...kept, ...(kept.length < cards.length ? overflow : []), ...footer];
+    };
+    const sectionState = (model, name, label) => {
+      const value = section(model, name), result = [];
+      if (value.loading) result.push(node('progress', { text: t(`Loading ${label}…`, `正在加载${label}…`) }));
+      if (value.error) result.push(row([badge(`${label}: ${short(value.error, 400)}`, 'warning', 'exclamationmark.circle'), button(t('Try again', '重试'), `pr-more:${name}`, { disabled: !!value.loading })]));
+      if (value.notice) result.push(text(`${label}: ${value.notice}`));
+      if (value.nextPage && !value.error) result.push(button(t(`Load more ${label}`, `加载更多${label}`), `pr-more:${name}`, { symbol: 'arrow.down.circle', disabled: !!value.loading }));
+      return result;
+    };
+    const status = entry => {
+      const state = String(entry.conclusion || entry.state || entry.status || '').toLowerCase();
+      if (state === 'success') return { text: t('Passed', '通过'), tone: 'success', symbol: 'checkmark.circle' };
+      if (['failure', 'error', 'timed_out'].includes(state)) return { text: state === 'timed_out' ? t('Timed out', '超时') : t('Failed', '失败'), tone: 'danger', symbol: 'xmark.circle' };
+      if (['in_progress', 'pending', 'waiting', 'requested', 'queued'].includes(state)) return { text: ['in_progress', 'pending'].includes(state) ? t('Running', '运行中') : t('Queued', '等待中'), tone: 'warning', symbol: 'clock' };
+      if (state === 'cancelled') return { text: t('Cancelled', '已取消'), tone: 'muted', symbol: 'minus.circle' };
+      if (state === 'skipped') return { text: t('Skipped', '已跳过'), tone: 'muted', symbol: 'minus.circle' };
+      if (state === 'neutral') return { text: t('Neutral', '中立'), tone: 'muted', symbol: 'minus.circle' };
+      if (state === 'action_required') return { text: t('Action required', '需要处理'), tone: 'warning', symbol: 'exclamationmark.circle' };
+      if (state === 'stale') return { text: t('Stale', '已过期'), tone: 'muted', symbol: 'clock' };
+      if (state === 'completed') return { text: t('Completed', '已完成'), tone: 'muted', symbol: 'checkmark.circle' };
+      return { text: t('Unknown', '未知'), tone: 'muted', symbol: 'questionmark.circle' };
+    };
+    const statusBadge = entry => node('badge', status(entry));
+    const headItems = (model, name) => items(model, name).filter(entry => !entry.head_sha || entry.head_sha === model.headSHA);
+    const reviewState = value => {
+      const state = String(value || '').toUpperCase();
+      if (state === 'APPROVED') return badge(t('Approved', '已批准'), 'success', 'checkmark.circle');
+      if (state === 'CHANGES_REQUESTED') return badge(t('Changes requested', '要求修改'), 'danger', 'exclamationmark.circle');
+      if (state === 'DISMISSED') return badge(t('Dismissed', '已撤销审查'), 'muted', 'minus.circle');
+      if (state === 'PENDING') return badge(t('Pending review', '待提交审查'), 'warning', 'clock');
+      return badge(t('Reviewed', '已审查'), 'muted', 'text.bubble');
+    };
+    const repository = model => section(model, 'repository').data || {};
+    const merged = item => !!(item.merged || item.merged_at);
+    const mergeState = item => {
+      if (merged(item)) return badge(t('Merged', '已合并'), 'accent', 'arrow.triangle.merge');
+      if (item.state === 'closed') return badge(t('Closed', '已关闭'), 'danger', 'xmark.circle');
+      if (item.draft) return badge(t('Draft', '草稿'), 'muted', 'circle.dashed');
+      if (item.mergeable === false || item.mergeable_state === 'dirty') return badge(t('Merge conflicts', '存在合并冲突'), 'danger', 'exclamationmark.triangle');
+      if (item.mergeable === null || item.mergeable === undefined || item.mergeable_state === 'unknown') return badge(t('Merge status pending', '合并状态待确认'), 'muted', 'clock');
+      if (item.mergeable_state === 'blocked') return badge(t('Merge is blocked', '合并受阻'), 'warning', 'lock');
+      if (item.mergeable_state === 'behind') return badge(t('Branch is behind', '分支需要更新'), 'warning', 'arrow.triangle.branch');
+      return badge(t('No merge conflicts', '无合并冲突'), 'success', 'checkmark.circle');
+    };
+    function summary(model) {
+      const item = model.item || {}, repo = repository(model), reviewItems = items(model, 'reviews');
+      const latest = new Map();
+      for (const review of reviewItems.slice().sort((a, b) => String(a.submitted_at || '').localeCompare(String(b.submitted_at || '')))) {
+        if (review.user?.login && ['APPROVED', 'CHANGES_REQUESTED', 'DISMISSED'].includes(String(review.state).toUpperCase())) latest.set(review.user.login, String(review.state).toUpperCase());
+      }
+      const approvals = [...latest.values()].filter(value => value === 'APPROVED').length;
+      const requested = [...latest.values()].filter(value => value === 'CHANGES_REQUESTED').length;
+      const checks = [...headItems(model, 'checks'), ...headItems(model, 'statuses')];
+      const complete = checks.filter(entry => !['in_progress', 'pending', 'waiting', 'requested', 'queued', ''].includes(String(entry.conclusion || entry.state || entry.status || '').toLowerCase())).length;
+      const failed = checks.filter(entry => status(entry).tone === 'danger').length;
+      const branch = [item.base?.label || item.base?.ref, item.head?.label || item.head?.ref].filter(Boolean).join(' ← ');
+      const reviewSection = section(model, 'reviews'), reviewLoaded = reviewSection.loaded;
+      const reviewPartial = !reviewLoaded || reviewSection.loading || reviewSection.nextPage || reviewSection.notice;
+      const ciPartial = ['checks', 'statuses', 'workflows'].some(name => {
+        const value = section(model, name);
+        return !value.loaded || value.loading || value.error || value.nextPage || value.notice;
+      });
+      const runs = headItems(model, 'workflows'), runsCompleted = runs.filter(run => run.status === 'completed').length, runsFailed = runs.filter(run => status(run).tone === 'danger').length;
+      return [
+        ...(branch ? [text(branch, 'monospaced')] : []),
+        row([...(item.state === 'open' && !item.draft && !merged(item) ? [mergeState(item)] : []),
+          ...(reviewSection.error ? [badge(t(`Reviews: ${short(reviewSection.error, 180)}`, `审查：${short(reviewSection.error, 180)}`), 'warning', 'exclamationmark.circle')] : reviewLoaded ? [badge(t(`${reviewPartial ? 'Loaded reviews: ' : ''}${approvals} approved · ${requested} requesting changes`, `${reviewPartial ? '已加载审查：' : ''}${approvals} 人批准 · ${requested} 人要求修改`), requested || reviewPartial ? 'warning' : approvals ? 'success' : 'muted', 'person.crop.circle.badge.checkmark')] : [badge(reviewSection.loading ? t('Reviews loading', '审查加载中') : t('Reviews not loaded', '审查尚未加载'), 'muted', 'clock')]),
+          ...(checks.length ? [badge(t(`${complete}/${checks.length} loaded checks finished${failed ? ` · ${failed} failed` : ''}${ciPartial ? ' · incomplete' : ''}`, `${complete}/${checks.length} 项已加载检查结束${failed ? ` · ${failed} 项失败` : ''}${ciPartial ? ' · 信息不完整' : ''}`), failed ? 'danger' : ciPartial ? 'warning' : complete === checks.length ? 'success' : 'warning', 'checklist')] : []),
+          ...(runs.length ? [badge(t(`${ciPartial ? 'Loaded Actions' : 'Actions'} ${runsCompleted}/${runs.length} finished${runsFailed ? ` · ${runsFailed} failed` : ''}${ciPartial ? ' · incomplete' : ''}`, `${ciPartial ? '已加载 Actions' : 'Actions'} ${runsCompleted}/${runs.length} 项结束${runsFailed ? ` · ${runsFailed} 项失败` : ''}${ciPartial ? ' · 信息不完整' : ''}`), runsFailed ? 'danger' : ciPartial ? 'warning' : runsCompleted === runs.length ? 'success' : 'warning', 'play.circle')] : [])]),
+        ...(Number.isInteger(item.commits) || Number.isInteger(item.changed_files) ? [row([
+          ...(Number.isInteger(item.commits) ? [text(t(`${item.commits} commits`, `${item.commits} 次提交`))] : []),
+          ...(Number.isInteger(item.changed_files) ? [text(t(`${item.changed_files} files changed`, `${item.changed_files} 个文件变更`))] : []),
+          ...(Number.isInteger(item.additions) ? [text(`+${item.additions}`, 'monospaced', 'success')] : []),
+          ...(Number.isInteger(item.deletions) ? [text(`−${item.deletions}`, 'monospaced', 'danger')] : [])
+        ])] : []),
+        ...(merged(item) ? [text(t(`Merged${item.merged_by?.login ? ` by ${item.merged_by.login}` : ''}${item.merged_at ? ` · ${date({ created_at: item.merged_at })}` : ''}`, `已合并${item.merged_by?.login ? ` · ${item.merged_by.login}` : ''}${item.merged_at ? ` · ${date({ created_at: item.merged_at })}` : ''}`))] : []),
+        ...(repo.archived ? [badge(t('Repository is archived', '仓库已归档'), 'muted', 'archivebox')] : []),
+        row(['discussion', 'checks', 'commits', 'files'].map(tab => {
+          const label = { discussion: t('Discussion', '讨论'), checks: t('Checks', '检查'), commits: t('Commits', '提交'), files: t('Files', '文件') }[tab];
+          return button(label, `pr-tab:${tab}`, { id: `pr-tab-${tab}`, value: model.tab === tab || tab === 'discussion' && model.tab === 'overview' ? 'selected' : '' });
+        })), node('divider')
+      ];
+    }
+    function eventLabel(entry) {
+      const label = entry.label?.name;
+      const assignee = entry.assignee?.login;
+      const reviewer = entry.requested_reviewer?.login || entry.requested_team?.name;
+      const labels = {
+        closed: t('closed this PR', '关闭了这个 PR'), reopened: t('reopened this PR', '重新打开了这个 PR'),
+        merged: t('merged this PR', '合并了这个 PR'), committed: t('pushed a commit', '提交了代码'),
+        head_ref_force_pushed: t('force-pushed the source branch', '强制更新了来源分支'), head_ref_deleted: t('deleted the source branch', '删除了来源分支'),
+        head_ref_restored: t('restored the source branch', '恢复了来源分支'), base_ref_changed: t('changed the target branch', '修改了目标分支'),
+        ready_for_review: t('marked ready for review', '标记为可以审查'), convert_to_draft: t('converted to a draft', '转为草稿'),
+        review_requested: t(`requested a review${reviewer ? ` from ${reviewer}` : ''}`, `请求审查${reviewer ? ` · ${reviewer}` : ''}`),
+        review_request_removed: t(`removed a review request${reviewer ? ` for ${reviewer}` : ''}`, `取消了审查请求${reviewer ? ` · ${reviewer}` : ''}`),
+        review_dismissed: t('dismissed a review', '撤销了审查'),
+        labeled: t(`added label${label ? ` ${label}` : ''}`, `添加了标签${label ? ` · ${label}` : ''}`),
+        unlabeled: t(`removed label${label ? ` ${label}` : ''}`, `移除了标签${label ? ` · ${label}` : ''}`),
+        assigned: t(`assigned${assignee ? ` ${assignee}` : ''}`, `指派了负责人${assignee ? ` · ${assignee}` : ''}`),
+        unassigned: t(`unassigned${assignee ? ` ${assignee}` : ''}`, `移除了负责人${assignee ? ` · ${assignee}` : ''}`),
+        renamed: t(`renamed the PR${entry.rename?.to ? ` to ${entry.rename.to}` : ''}`, `修改了 PR 标题${entry.rename?.to ? ` · ${entry.rename.to}` : ''}`),
+        locked: t('locked the discussion', '锁定了讨论'), unlocked: t('unlocked the discussion', '解锁了讨论'),
+        milestoned: t(`set milestone${entry.milestone?.title ? ` ${entry.milestone.title}` : ''}`, `设置了里程碑${entry.milestone?.title ? ` · ${entry.milestone.title}` : ''}`),
+        demilestoned: t('removed the milestone', '移除了里程碑'), auto_merge_enabled: t('enabled auto-merge', '启用了自动合并'), auto_merge_disabled: t('disabled auto-merge', '关闭了自动合并'),
+        deployed: t('deployed this PR', '部署了这个 PR'), deployment_environment_changed: t('changed the deployment environment', '修改了部署环境'),
+        mentioned: t('mentioned this PR', '提到了这个 PR'), subscribed: t('subscribed to this PR', '关注了这个 PR'), unsubscribed: t('unsubscribed from this PR', '取消关注了这个 PR')
+      };
+      if (entry.event === 'cross-referenced') return t(`referenced this PR${entry.source?.issue?.title ? ` · ${entry.source.issue.title}` : ''}`, `引用了这个 PR${entry.source?.issue?.title ? ` · ${entry.source.issue.title}` : ''}`);
+      return labels[entry.event] || t(`Activity · ${String(entry.event || '').replace(/_/g, ' ')}`, `动态 · ${String(entry.event || '').replace(/_/g, ' ')}`);
+    }
+    function discussion(model) {
+      const sources = [['comments', t('Comments', '留言')], ['reviews', t('Reviews', '审查')], ['reviewComments', t('Inline comments', '代码留言')], ['timeline', t('Activity', '动态')]];
+      const activity = [];
+      const known = Object.fromEntries(['comments', 'reviews', 'reviewComments'].map(name => [name, new Set(items(model, name).map(entry => String(entry.id)))]));
+      for (const [name] of sources) for (const entry of items(model, name)) {
+        let source = name;
+        if (name === 'timeline') {
+          if (entry.event === 'line-commented' && Array.isArray(entry.comments)) {
+            for (const comment of entry.comments) if (!known.reviewComments.has(String(comment.id))) activity.push({ source: 'reviewComments', entry: comment, timestamp: comment.created_at || entry.created_at || '' });
+            continue;
+          }
+          source = { commented: 'comments', reviewed: 'reviews', 'line-commented': 'reviewComments' }[entry.event] || name;
+          if (source !== name && known[source].has(String(entry.id))) continue;
+        }
+        activity.push({ source, entry, timestamp: entry.submitted_at || entry.created_at || entry.commit?.author?.date || '' });
+      }
+      activity.sort((a, b) => a.timestamp.localeCompare(b.timestamp) || String(a.entry.id || '').localeCompare(String(b.entry.id || '')));
+      const cards = activity.slice(-80).map(({ source, entry }) => {
+        const nodes = [row([authorButton(model, entry, prURL(model)), text(date(entry)), node('spacer'),
+          ...(source === 'reviews' ? [reviewState(entry.state)] : [badge(source === 'reviewComments' ? t('Code comment', '代码留言') : source === 'comments' ? t('Comment', '留言') : t('Activity', '动态'))])])];
+        if (source === 'timeline') {
+          nodes.push(text(eventLabel(entry), 'body', 'neutral'));
+          if (entry.commit_id || entry.sha) nodes.push(text(short(entry.commit_id || entry.sha, 12), 'monospaced'));
+          if (entry.dismissed_review?.dismissal_message) nodes.push(markdown(entry.dismissed_review.dismissal_message, 2048));
+        } else {
+          if (source === 'reviewComments') nodes.push(text([entry.path, Number.isInteger(entry.line || entry.original_line) ? t(`line ${entry.line || entry.original_line}`, `第 ${entry.line || entry.original_line} 行`) : '', entry.in_reply_to_id ? t(`Reply to #${entry.in_reply_to_id}`, `回复 #${entry.in_reply_to_id}`) : ''].filter(Boolean).join(' · '), 'monospaced'));
+          if (entry.body) nodes.push(markdown(entry.body, 6 * 1024));
+          else if (source === 'reviews') nodes.push(text(t('Review submitted without a message.', '已提交审查，没有附加留言。')));
+        }
+        nodes.push(node('divider'));
+        return column(nodes);
+      });
+      const header = [text(t('Description', '描述'), 'headline', 'neutral'), node('markdown', { text: displayedBody(model.item?.body) }), node('divider'), text(t('Conversation & activity', '讨论与动态'), 'headline', 'neutral')];
+      if (!activity.length && sources.every(([name]) => section(model, name).loaded && !section(model, name).error)) header.push(text(t('No comments or activity yet.', '暂无留言或动态。')));
+      const footer = sources.flatMap(([name, label]) => sectionState(model, name, label));
+      if (activity.length > 80) footer.push(text(t('Showing a limited portion of loaded history. GitHub contains the full history.', '这里只显示部分已加载动态，GitHub 中保留完整记录。')));
+      return fit(model, header, cards, footer, '', true);
+    }
+    function selectedList(list, id, limit = 30) {
+      const selection = list.find(entry => String(entry.id) === String(id));
+      const visible = list.slice(0, limit);
+      if (selection && !visible.includes(selection)) visible.splice(Math.max(0, visible.length - 1), 1, selection);
+      return visible;
+    }
+    function actionsView(model, runs) {
+      const cards = [], run = runs.find(entry => String(entry.id) === String(model.selectedRunID)) || runs[0];
+      const visibleRuns = selectedList(runs, run?.id);
+      cards.push(column([text(t('Workflows', '工作流'), 'headline', 'neutral'), ...visibleRuns.map(entry => {
+        const result = status(entry);
+        return button(`${result.text} · ${short(entry.name || entry.display_title || 'GitHub Actions', 150)}${entry.run_number ? ` · #${entry.run_number}` : ''}`, `pr-jobs:${entry.id}`,
+          { value: run && String(entry.id) === String(run.id) ? 'selected' : '', symbol: result.symbol, tone: result.tone });
+      }), ...(runs.length > visibleRuns.length ? [text(t('Showing 30 loaded workflows. More runs are available on GitHub.', '显示 30 个已加载工作流，更多记录可在 GitHub 查看。'))] : [])]));
+      if (!run) return cards;
+      cards.push(row([text(short(run.name || run.display_title || 'GitHub Actions', 256), 'headline', 'neutral'), statusBadge(run), open(model, t('View run', '查看运行记录'), run.html_url, '/checks')]));
+      cards.push(text([run.run_number ? `#${run.run_number}` : '', run.event, date(run)].filter(Boolean).join(' · ')));
+      const value = model.jobsByRun?.[run.id];
+      if (!value) { cards.push(button(t('Load jobs & steps', '加载任务与步骤'), `pr-jobs:${run.id}`, { symbol: 'list.bullet.rectangle' })); return cards; }
+      if (value.loading) cards.push(node('progress', { text: t('Loading jobs…', '正在加载任务…') }));
+      if (value.error) cards.push(row([badge(short(value.error, 512), 'warning'), button(t('Retry jobs', '重试任务'), `pr-jobs:${run.id}`, { disabled: !!value.loading })]));
+      if (value.notice) cards.push(text(value.notice));
+      const jobs = Array.isArray(value.items) ? value.items : [], job = jobs.find(entry => String(entry.id) === String(model.selectedJobID)) || jobs[0];
+      const visibleJobs = selectedList(jobs, job?.id);
+      if (jobs.length) cards.push(column([text(t('Jobs', '任务'), 'headline', 'neutral'), ...visibleJobs.map(entry => {
+        const result = status(entry);
+        return button(`${result.text} · ${short(entry.name || t('Job', '任务'), 180)}`, `pr-job:${entry.id}`, { value: job && String(entry.id) === String(job.id) ? 'selected' : '', symbol: result.symbol, tone: result.tone });
+      }), ...(jobs.length > visibleJobs.length ? [text(t('Showing 30 loaded jobs. More jobs are available in this run on GitHub.', '显示 30 个已加载任务，更多任务可在 GitHub 的运行记录中查看。'))] : [])]));
+      else if (value.loaded && !value.error) cards.push(text(t('No jobs were reported for this run.', '这个工作流暂无任务记录。')));
+      if (value.nextPage) cards.push(button(t('Load more jobs', '加载更多任务'), `pr-jobs:${run.id}`, { disabled: !!value.loading }));
+      if (!job) return cards;
+      const steps = Array.isArray(job.steps) ? job.steps : [], completed = steps.filter(step => step.status === 'completed').length;
+      cards.push(row([text(short(job.name || t('Job', '任务'), 256), 'headline', 'neutral'), statusBadge(job), open(model, t('View job', '查看任务'), job.html_url, '/checks')]));
+      cards.push(text(t(`${completed}/${steps.length} steps finished`, `${completed}/${steps.length} 个步骤已结束`)));
+      cards.push(column(steps.slice(0, 30).map(step => row([statusBadge(step), text(`${step.number || ''} ${step.name || ''}`, 'body', 'neutral')]))));
+      if (steps.length > 30) cards.push(text(t('Showing the first 30 steps. The complete step list is available in this job on GitHub.', '显示前 30 个步骤，完整步骤可在 GitHub 的任务页面查看。')));
+      return cards;
+    }
+    function checksView(model) {
+      const checks = headItems(model, 'checks'), statuses = headItems(model, 'statuses'), workflows = headItems(model, 'workflows');
+      const sources = ['actions', 'checks', 'statuses'];
+      const source = sources.includes(model.checksSource) ? model.checksSource : workflows.length ? 'actions' : checks.length ? 'checks' : statuses.length ? 'statuses' : 'actions';
+      const names = { actions: 'GitHub Actions', checks: t('Check runs', '检查项'), statuses: t('Commit statuses', '提交状态') };
+      const counts = { actions: workflows.length, checks: checks.length, statuses: statuses.length };
+      const header = [text(t(`Checks for current commit ${short(model.headSHA, 12)}`, `当前提交 ${short(model.headSHA, 12)} 的检查`), 'headline', 'neutral'), text(t('These are reported checks; repository rules determine whether merging is allowed.', '这里显示实际检查结果；能否合并由仓库规则决定。')),
+        row(sources.map(name => button(`${names[name]}${counts[name] ? ` · ${counts[name]}` : ''}`, `pr-ci:${name}`, { value: source === name ? 'selected' : '' }))), node('divider')];
+      let cards = [];
+      if (source === 'actions') cards = actionsView(model, workflows);
+      if (source === 'checks') for (const check of checks.slice(0, 80)) cards.push(column([row([statusBadge(check), open(model, short(check.name || t('Check', '检查'), 256), check.details_url || check.html_url, '/checks', { tone: 'neutral' })]),
+        ...(check.output?.title ? [text(check.output.title, 'body', 'neutral')] : []),
+        ...(check.output?.summary ? [markdown(check.output.summary, 4 * 1024)] : []),
+        ...(check.started_at || check.completed_at ? [text(date(check))] : []), node('divider')]));
+      if (source === 'statuses') for (const check of statuses.slice(0, 80)) cards.push(column([row([statusBadge(check), open(model, short(check.context || t('Status', '状态'), 256), check.target_url, '/checks', { tone: 'neutral' })]),
+        ...(check.description ? [text(check.description, 'body', 'neutral')] : []), text(date(check)), node('divider')]));
+      const sourceName = source === 'actions' ? 'workflows' : source, current = section(model, sourceName);
+      if (!counts[source] && current.loaded && !current.error) header.push(text(t(`No ${names[source]} were reported for this commit.`, `这个提交暂无${names[source]}记录。`)));
+      const footer = [['checks', t('Checks', '检查项')], ['statuses', t('Commit statuses', '提交状态')], ['workflows', 'GitHub Actions']].flatMap(([name, label]) => sectionState(model, name, label));
+      return fit(model, header, cards, footer, '/checks');
+    }
+    function commitsView(model) {
+      const list = items(model, 'commits');
+      const cards = list.slice(0, 80).map(commit => column([
+        row([open(model, short(commit.sha, 12), commit.html_url, '/commits', { tone: 'accent' }), text(date(commit))]),
+        text(String(commit.commit?.message || '').split('\n')[0], 'headline', 'neutral'),
+        authorButton(model, commit, prURL(model) + '/commits'),
+        ...(String(commit.commit?.message || '').includes('\n') ? [markdown(String(commit.commit.message).split('\n').slice(1).join('\n').trim(), 2048)] : []), node('divider')
+      ]));
+      const header = [text(t('Commits', '提交'), 'headline', 'neutral')];
+      if (!list.length && section(model, 'commits').loaded && !section(model, 'commits').error) header.push(text(t('No commits returned.', '暂无提交记录。')));
+      return fit(model, header, cards, sectionState(model, 'commits', t('Commits', '提交')), '/commits');
+    }
+    function filesView(model) {
+      const list = items(model, 'files');
+      const labels = { added: t('Added', '新增'), removed: t('Removed', '删除'), modified: t('Modified', '修改'), renamed: t('Renamed', '重命名'), copied: t('Copied', '复制'), changed: t('Changed', '变更'), unchanged: t('Unchanged', '未变更') };
+      const cards = list.slice(0, 80).map(file => column([
+        row([badge(labels[file.status] || file.status || t('Changed', '变更'), file.status === 'added' ? 'success' : file.status === 'removed' ? 'danger' : 'muted'),
+          open(model, short(file.filename || t('File', '文件'), 256), file.blob_url, '/files', { tone: 'neutral' })]),
+        row([text(`+${Number.isInteger(file.additions) ? file.additions : 0}`, 'monospaced', 'success'), text(`−${Number.isInteger(file.deletions) ? file.deletions : 0}`, 'monospaced', 'danger')]),
+        ...(file.previous_filename ? [text(t(`Previously ${file.previous_filename}`, `原文件名 · ${file.previous_filename}`), 'monospaced')] : []),
+        ...(file.patch ? [code(file.patch, 'diff')] : [text(t('A text diff is unavailable. View this file on GitHub.', '没有可显示的文本差异，可在 GitHub 查看此文件。'))]), node('divider')
+      ]));
+      const header = [text(t('Changed files', '文件变更'), 'headline', 'neutral')];
+      if (!list.length && section(model, 'files').loaded && !section(model, 'files').error) header.push(text(t('No changed files returned.', '暂无文件变更记录。')));
+      return fit(model, header, cards, sectionState(model, 'files', t('Files', '文件')), '/files');
+    }
+    function content(model) {
+      if (!model) return [];
+      if (model.tab === 'checks') return checksView(model);
+      if (model.tab === 'commits') return commitsView(model);
+      if (model.tab === 'files') return filesView(model);
+      return discussion(model);
+    }
+    function actions(model) {
+      const item = model.item || {}, comment = model.comment || {}, merge = model.merge || {}, repo = repository(model), repoState = section(model, 'repository');
+      const result = [node('divider')];
+      if (model.tab === 'discussion' || model.tab === 'overview' || !model.tab) {
+        result.push(text(t('Leave a comment', '留言'), 'headline', 'neutral'), node('textEditor', { id: comment.fieldID || `pr-comment-${model.key}`, text: t('Comment', '留言'), textStyle: 'body', placeholder: t('Write a comment…', '写下你的留言…'), value: comment.draft || '', disabled: !!comment.busy }),
+          row([button(comment.busy ? t('Posting…', '正在发送…') : t('Post comment', '发送留言'), 'pr-comment', { appearance: 'secondary', symbol: 'text.bubble', disabled: !!comment.busy || !!repo.archived })]));
+        if (comment.error) result.push(badge(comment.error, 'danger', 'exclamationmark.circle'));
+        if (comment.notice) result.push(badge(comment.notice, 'success', 'checkmark.circle'));
+        if (comment.uncertain) result.push(badge(t('The response was interrupted. Refresh the discussion before sending again.', '响应中断，重新发送前请刷新讨论确认留言是否已发布。'), 'warning', 'exclamationmark.circle'));
+        result.push(node('divider'));
+      }
+      result.push(text(t('Merge', '合并'), 'headline', 'neutral'));
+      if (merge.notice) result.push(badge(merge.notice, 'success', 'checkmark.circle'));
+      if (merge.error) result.push(badge(merge.error, 'danger', 'exclamationmark.circle'));
+      if (merged(item)) { result.push(text(t('This pull request has been merged.', '这个 PR 已合并。'))); return result; }
+      if (item.state === 'closed') { result.push(text(t('This pull request is closed.', '这个 PR 已关闭。'))); return result; }
+      if (item.draft) { result.push(badge(t('A draft must be marked ready for review before merging.', '草稿需要标记为可以审查后才能合并。'), 'muted', 'circle.dashed')); return result; }
+      if (repo.archived) { result.push(badge(t('An archived repository cannot be changed.', '仓库已归档，无法修改。'), 'muted', 'archivebox')); return result; }
+      if (merge.pending) {
+        const method = { merge: t('Merge commit', '合并提交'), squash: t('Squash and merge', '压缩并合并'), rebase: t('Rebase and merge', '变基并合并') }[merge.pending.method] || merge.pending.method;
+        result.push(badge(t('Confirm merge', '确认合并'), 'warning', 'arrow.triangle.merge'), text(t(`${method} · ${merge.pending.repo} #${merge.pending.number}`, `${method} · ${merge.pending.repo} #${merge.pending.number}`), 'body', 'neutral'),
+          text(t(`This will merge commit ${short(merge.pending.sha, 12)} into ${item.base?.ref || 'the target branch'}.`, `将提交 ${short(merge.pending.sha, 12)} 合并到 ${item.base?.ref || '目标分支'}。`)),
+          row([button(t('Cancel', '取消'), 'pr-cancel-merge', { disabled: !!merge.busy }), button(merge.busy ? t('Merging…', '正在合并…') : t('Confirm merge', '确认合并'), 'pr-confirm-merge', { appearance: 'primary', symbol: 'arrow.triangle.merge', disabled: !!merge.busy })]));
+        return result;
+      }
+      if (repoState.loading || !repoState.loaded && !repoState.error) { result.push(node('progress', { text: t('Checking repository permissions…', '正在检查仓库权限…') })); return result; }
+      if (repoState.error) result.push(badge(t('Repository permissions could not be loaded.', '无法获取仓库权限。'), 'warning', 'exclamationmark.circle'), button(t('Retry permissions', '重试权限'), 'pr-more:repository'));
+      if (repo.permissions?.push !== true) {
+        result.push(text(t('Merge permission is unavailable for this account or connection.', '当前账号或连接尚未获得合并权限。')), button(t('Manage repository access', '管理仓库访问权限'), 'manage', { symbol: 'folder.badge.gearshape' }), open(model, t('View merge options on GitHub', '在 GitHub 查看合并选项'), prURL(model)));
+        return result;
+      }
+      if (item.mergeable === false || item.mergeable_state === 'dirty') { result.push(badge(t('Resolve merge conflicts before merging.', '解决合并冲突后才能合并。'), 'danger', 'exclamationmark.triangle')); return result; }
+      if (item.mergeable_state === 'blocked' || item.mergeable_state === 'behind') { result.push(badge(item.mergeable_state === 'blocked' ? t('Repository rules currently block merging.', '仓库规则暂时阻止合并。') : t('Update the source branch before merging.', '更新来源分支后再合并。'), 'warning', 'lock'), open(model, t('View merge requirements on GitHub', '在 GitHub 查看合并要求'), prURL(model))); return result; }
+      if (item.mergeable === null || item.mergeable === undefined || item.mergeable_state === 'unknown') { result.push(text(t('GitHub is calculating merge status. Refresh to check again.', 'GitHub 正在计算合并状态，刷新后再确认。')), button(t('Refresh status', '刷新状态'), 'pr-refresh', { symbol: 'arrow.clockwise' })); return result; }
+      const methods = [['merge', 'allow_merge_commit', t('Merge commit', '合并提交')], ['squash', 'allow_squash_merge', t('Squash and merge', '压缩并合并')], ['rebase', 'allow_rebase_merge', t('Rebase and merge', '变基并合并')]].filter(([, field]) => repo[field] === true);
+      if (methods.length) result.push(row(methods.map(([method, , label]) => button(label, `pr-merge:${method}`, { appearance: 'secondary', symbol: 'arrow.triangle.merge', disabled: !!merge.busy }))));
+      else result.push(text(t('No merge method is explicitly enabled for this repository.', '仓库没有明确启用可用的合并方式。')), open(model, t('View merge options on GitHub', '在 GitHub 查看合并选项'), prURL(model)));
+      result.push(text(t('GitHub will enforce repository rules, checks, and the current commit when you confirm.', '确认时，GitHub 会检查仓库规则、检查结果以及当前提交。')));
+      return result;
+    }
+    return { summary, content, actions };
+  }
   const panelID = 'com.nora.github.panel';
   const clientID = 'Iv23liPZy7EARoSnYoYy';
   const connectionKey = 'connection';
@@ -125,19 +714,43 @@
     }
     return refreshOperation.promise;
   }
-  async function api(path, token) {
+  async function api(path, token, options = {}) {
     const current = generation;
     const connection = token ? { token } : await activeCredentials();
     if (current !== generation) throw connectionChanged();
-    const response = await http(`https://api.github.com${path}`, { headers: { Accept: 'application/vnd.github+json', Authorization: `Bearer ${connection.token}`, 'X-GitHub-Api-Version': '2026-03-10' } });
+    const method = options.method || 'GET';
+    let response;
+    try {
+      response = await http(`https://api.github.com${path}`, { method, timeoutSeconds: 12,
+        headers: { Accept: 'application/vnd.github+json', Authorization: `Bearer ${connection.token}`, 'X-GitHub-Api-Version': '2026-03-10',
+          ...(options.body === undefined ? {} : { 'Content-Type': 'application/json' }) },
+        ...(options.body === undefined ? {} : { body: JSON.stringify(options.body) }) });
+    } catch (error) {
+      if (method !== 'GET') error.uncertain = true;
+      throw error;
+    }
     if (current !== generation) throw connectionChanged();
-    if (response.status === 401) throw new Error(message.expired);
-    if (response.status === 429 || response.status === 403 && (response.headers?.['x-ratelimit-remaining'] === '0' || response.headers?.['retry-after'])) throw new Error(t('GitHub rate limit reached. Try again later.', 'GitHub 请求次数已达上限，请稍后重试。'));
-    if (response.status === 403) throw new Error(message.denied);
-    if (response.status === 404) throw new Error(t('Repository not found or not authorized.', '找不到仓库或尚未授权。'));
-    if (response.status !== 200) throw new Error(message.network);
-    return { data: json(response), headers: response.headers || {} };
+    let errorMessage;
+    if (response.status === 401) errorMessage = message.expired;
+    else if (response.status === 429 || response.status === 403 && (response.headers?.['x-ratelimit-remaining'] === '0' || response.headers?.['retry-after'])) errorMessage = t('GitHub rate limit reached. Try again later.', 'GitHub 请求次数已达上限，请稍后重试。');
+    else if (response.status === 403) errorMessage = message.denied + t(' The GitHub App must also allow this operation.', ' GitHub App 也需要允许此操作。');
+    else if (response.status === 404) errorMessage = t('Repository not found or not authorized.', '找不到仓库或尚未授权。');
+    else if (response.status === 405) errorMessage = t('GitHub cannot merge this PR. Check its reviews, checks, conflicts, and merge queue on GitHub.', 'GitHub 暂时无法合并此 PR，请检查审查、检查结果、冲突和合并队列。');
+    else if (response.status === 409) errorMessage = t('The PR changed. Refresh and confirm the latest commit before merging.', 'PR 已发生变化，请刷新后确认最新提交再合并。');
+    else if (response.status === 410) errorMessage = t('GitHub no longer allows comments on this item.', 'GitHub 已不允许在此条目中发表评论。');
+    else if (response.status === 422) errorMessage = t('GitHub rejected the request. Check the content and repository rules before trying again.', 'GitHub 拒绝了请求，请检查内容和仓库规则。');
+    else if (!(options.expectedStatuses || [200]).includes(response.status)) errorMessage = message.network;
+    if (errorMessage) {
+      const error = new Error(errorMessage);
+      error.status = response.status;
+      throw error;
+    }
+    return { data: json(response), headers: response.headers || {}, status: response.status };
   }
+  const writeAPI = (path, method, body) => {
+    if (!['POST', 'PUT'].includes(method)) throw new Error(message.invalid);
+    return api(path, undefined, { method, body, expectedStatuses: method === 'POST' ? [201] : [200] });
+  };
   function repository(value) {
     if (typeof value !== 'string' || value.length > 200 || !/^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/.test(value) || value.split('/').some(part => part === '.' || part === '..')) throw new Error(t('Enter a repository as owner/name.', '请输入 owner/name 格式的仓库。'));
     return value;
@@ -199,9 +812,10 @@
   }
   function clearDetails() {
     ++detailRevision;
+    pullDetails.reset();
     state.selected = null; state.detailsVisible = false; state.detailLoading = false; state.detailError = '';
   }
-  async function loadDetail(item) {
+  async function loadDetail(item, { preserveTab = false } = {}) {
     const revision = ++detailRevision, current = generation;
     const requestedKey = itemKey(item), requestedKind = state.kind, requestedRepo = state.repo, requestedStatus = state.status;
     state.selected = item; state.detailsVisible = true; state.detailLoading = true; state.detailError = '';
@@ -214,6 +828,8 @@
       if (detail.number !== item.number || requestedKind === 'issues' && detail.pull_request) throw new Error(message.invalid);
       state.selected = { ...item, ...detail, id: item.id, repository: item.repository };
       state.items = state.items.map(loaded => itemKey(loaded) === requestedKey ? state.selected : loaded);
+      if (requestedKind === 'pulls') await pullDetails.open(state.selected, { preserveTab });
+      else pullDetails.reset();
     } catch (error) {
       if (isCurrent()) state.detailError = error?.message || message.network;
     } finally {
@@ -517,6 +1133,8 @@
     // Swift encodes decoded defaults and escapes slashes, including those inside inline Base64 images.
     return utf8Size(JSON.stringify(normalized(descriptor)).replace(/\//g, '\\/'));
   }
+  const viewNodeCount = descriptor => 1 + (descriptor.children || []).reduce((count, child) => count + viewNodeCount(child), 0)
+    + (descriptor.items || []).reduce((count, child) => count + viewNodeCount(child), 0);
   function draftForSelectedItem() {
     const item = state.selected;
     if (!item || !state.detailsVisible) throw new Error(t('Select an item to hand to Nora.', '选择一条条目后才能交给 Nora。'));
@@ -528,7 +1146,8 @@
       `${t('Repository', '仓库')}: ${itemRepository(item)}`, `${t('Type', '类型')}: ${kind}`, `${t('Number', '编号')}: #${item.number}`,
       `${t('Title', '标题')}: ${short(item.title, 4096)}`, `${t('State', '状态')}: ${itemStatus(item).text}`,
       `${t('Author', '作者')}: ${short(item.user?.login || t('Unknown author', '未知作者'), 64)}`,
-      `${t('URL', '链接')}: ${sourceURL}`, '', `${t('Description', '描述')}:`, body].join('\n');
+      `${t('URL', '链接')}: ${sourceURL}`,
+      ...(state.kind === 'pulls' ? ['', pullDetails.context()] : []), '', `${t('Description', '描述')}:`, body].join('\n');
     return { title: boundedText(`${kind} #${item.number} · ${item.title}`, 256),
       prompt: t(`Please help me analyze and work on this GitHub ${kind}.`, `请帮我分析并处理这条 GitHub ${kind}。`),
       context: boundedText(context, 128 * 1024, '\n\n' + t('Description shortened. The full text is available at the GitHub source URL.', '描述已截断，GitHub 来源链接中保留完整内容。')),
@@ -590,8 +1209,8 @@
     const reachedLimit = totalItems >= maximumSidebarItems || totalItems > visibleItems.length;
     const hasLocalFilters = !!(state.query.trim() || state.author || state.label);
     if (reachedLimit) children.push(styledText(t(
-      `Showing the first ${visibleItems.length} loaded matches. Narrow the repository or search to continue.`,
-      `显示前 ${visibleItems.length} 个已加载匹配；缩小仓库范围或搜索后可继续。`)));
+      `Showing ${visibleItems.length} loaded matches. Narrow the repository or search to continue.`,
+      `显示 ${visibleItems.length} 个已加载匹配；缩小仓库范围或搜索后可继续。`)));
     if (state.moreItems && hasLocalFilters) children.push(styledText(t(
       'Clear search or filters to continue loading by scrolling.', '清除搜索或筛选后可继续下拉加载。')));
     if (state.itemsLoading) children.push(node('progress', { text: t('Loading items…', '正在加载条目…') }));
@@ -637,6 +1256,7 @@
     const children = [
       node('toolbar', {}, [styledText(`${itemRepository(item)} · ${state.kind === 'pulls' ? 'PR' : 'Issue'} #${item.number}`, 'monospaced'),
         node('badge', status), node('spacer'),
+        button(message.refresh, 'refresh-detail', state.detailLoading, { appearance: 'icon', symbol: 'arrow.clockwise' }),
         button(t('View on GitHub', '在 GitHub 查看'), 'open-item', false, { appearance: 'icon', symbol: 'arrow.up.forward.square' }),
         button(t('Close details', '关闭详情'), 'close-detail', false, { appearance: 'icon', symbol: 'xmark' })]),
       column([
@@ -649,6 +1269,8 @@
     if (state.detailLoading) children.push(node('progress', { text: t('Loading details…', '正在加载详情…') }));
     else if (state.detailError) children.push(node('badge', { text: short(state.detailError, 512), tone: 'danger' }),
       button(t('Retry details', '重试详情'), 'retry-detail', false, { symbol: 'arrow.clockwise' }));
+    else if (state.kind === 'pulls' && pullDetails.current) children.push(
+      ...pullView.summary(pullDetails.current), ...pullView.content(pullDetails.current), ...pullView.actions(pullDetails.current));
     else children.push(node('markdown', { text: displayedBody(item.body) }));
     return node('column', { id: 'item-details' }, children);
   }
@@ -701,8 +1323,12 @@
       avatarCount = minimum;
       sidebar = itemSidebar(visibleItems, items.length, avatarCount);
     }
-    while (visibleItems.length > 1 && encodedViewSize({ type: 'workspace', ...properties, children: [sidebar, main] }) > 400 * 1024) {
+    while (visibleItems.length > 1 && (encodedViewSize({ type: 'workspace', ...properties, children: [sidebar, main] }) > 400 * 1024
+      || viewNodeCount({ children: [sidebar, main] }) > 950)) {
       visibleItems = visibleItems.slice(0, Math.max(1, visibleItems.length - 20));
+      if (state.selected && state.detailsVisible && !visibleItems.some(item => itemKey(item) === itemKey(state.selected))) {
+        visibleItems = [...visibleItems.slice(0, -1), state.selected];
+      }
       sidebar = itemSidebar(visibleItems, items.length, 0);
     }
     return node('workspace', properties, [sidebar, main]);
@@ -712,10 +1338,21 @@
     return url;
   }
   const web = async url => nora.request('browser.open', { url: githubURL(url) });
+  const pullDetails = createPullRequestDetails({ api, write: writeAPI, t, boundedText, githubURL,
+    isCurrent: item => state.kind === 'pulls' && state.detailsVisible && state.selected && itemKey(state.selected) === itemKey(item),
+    onUpdated: item => {
+      if (state.kind !== 'pulls' || !state.detailsVisible || !state.selected || itemKey(state.selected) !== itemKey(item)) return;
+      state.selected = item;
+      state.items = state.items.map(loaded => itemKey(loaded) === itemKey(item) ? item : loaded);
+    }
+  });
+  const pullView = createPullRequestView({ node, t, boundedText, displayedBody, short, itemStatus, itemDate });
   nora.registerPanel(panelID, async (event = {}) => {
     const revision = ++renderRevision;
     state.error = '';
     const values = event.values || {};
+    const commentField = pullDetails.current?.comment.fieldID;
+    if (commentField && typeof values[commentField] === 'string') pullDetails.setCommentDraft(values[commentField]);
     try {
       const action = event.action;
       if (!['disconnect', 'cancel-login', 'begin-login', 'finish-login', 'open-login', 'connect-token', 'toggle-token'].includes(action)) await restore();
@@ -775,7 +1412,32 @@
         } else await loadDetail(selected);
       }
       else if (action === 'close-detail') clearDetails();
-      else if (action === 'retry-detail' && state.selected && state.detailsVisible) await loadDetail(state.selected);
+      else if (action === 'retry-detail' && state.selected && state.detailsVisible) await loadDetail(state.selected, { preserveTab: true });
+      else if ((action === 'refresh-detail' || action === 'pr-refresh') && state.selected && state.detailsVisible) {
+        if (state.kind === 'pulls' && pullDetails.current) await pullDetails.refresh();
+        else await loadDetail(state.selected, { preserveTab: true });
+      }
+      else if (action?.startsWith('pr-tab:')) await pullDetails.selectTab(action.slice(7));
+      else if (action?.startsWith('pr-more:')) await pullDetails.more(action.slice(8));
+      else if (action?.startsWith('pr-ci:') && pullDetails.current && ['actions', 'checks', 'statuses'].includes(action.slice(6))) pullDetails.current.checksSource = action.slice(6);
+      else if (action?.startsWith('pr-jobs:')) {
+        const runID = Number(action.slice(8));
+        await pullDetails.jobs(runID);
+        if (pullDetails.current?.jobsByRun[runID]) {
+          pullDetails.current.selectedRunID = runID;
+          pullDetails.current.selectedJobID = null;
+          pullDetails.current.checksSource = 'actions';
+        }
+      }
+      else if (action?.startsWith('pr-job:') && pullDetails.current) {
+        const jobID = Number(action.slice(7)), model = pullDetails.current;
+        if (model.jobsByRun[model.selectedRunID]?.items.some(job => job.id === jobID)) model.selectedJobID = jobID;
+      }
+      else if (action === 'pr-comment') await pullDetails.postComment({ authorized: typeof event.actionCapability === 'string' && !!event.actionCapability.trim() });
+      else if (action?.startsWith('pr-merge:')) pullDetails.prepareMerge(action.slice(9));
+      else if (action === 'pr-confirm-merge') await pullDetails.confirmMerge({ authorized: typeof event.actionCapability === 'string' && !!event.actionCapability.trim() });
+      else if (action === 'pr-cancel-merge') pullDetails.cancelMerge();
+      else if (action?.startsWith('pr-open:')) await web(decodeURIComponent(action.slice(8)));
       else if (action === 'handoff-item') {
         if (!await nora.chat.openDraft(draftForSelectedItem(), event)) throw new Error(t('Nora could not open this draft. Try again.', 'Nora 暂时无法打开草稿，请重试。'));
       }

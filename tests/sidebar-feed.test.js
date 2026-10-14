@@ -94,7 +94,9 @@ test('Selecting a PR uses the pulls detail API even though the feed item used th
   const view = await f.render({ action: `item:${key('team/second', 7)}` });
   assert.match(texts(view), /Full PR details|Merged/);
   assert.equal(view.value, key('team/second', 7));
-  assert.equal(new URL(f.requests.at(-1).url).pathname, '/repos/team/second/pulls/7');
+  assert.equal(f.requests.filter(request => new URL(request.url).pathname === '/repos/team/second/pulls/7').length, 1);
+  assert.ok(f.requests.every(request => request.method === 'GET'));
+  assert.ok(!f.requests.some(request => new URL(request.url).pathname === '/repos/team/second/issues/7'));
 });
 
 test('Legacy numeric selection only resolves when the loaded repository-number identity is unique', async () => {
