@@ -167,14 +167,24 @@
         else if (model?.key === record.key) model.comment.busy = false;
       }
     }
+    function mergeBase(item, fallbackRepository) {
+      const ref = item.base?.ref, repo = item.base?.repo?.full_name ?? fallbackRepository;
+      if (typeof ref !== 'string' || !ref || typeof repo !== 'string' || !/^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/.test(repo)) return null;
+      return { repo: repo.toLowerCase(), ref };
+    }
     function mergeProblem(record, method, repositoryData = record.sections.repository.data) {
       if (record.item.merged || record.item.merged_at || record.item.state !== 'open') return t('This PR is already closed or merged.', '这条 PR 已关闭或已合并。');
       if (record.item.draft === true) return t('A draft PR cannot be merged.', '草稿 PR 不能合并。');
       if (!record.headSHA) return t('The latest commit is unavailable. Refresh this PR.', '无法获取最新提交，请刷新这条 PR。');
+      if (!mergeBase(record.item, record.repo)) return t('The target branch is unavailable. Refresh this PR.', '无法获取目标分支，请刷新这条 PR。');
+      if (repositoryData?.archived === true) return t('An archived repository cannot be changed.', '仓库已归档，无法修改。');
       if (!repositoryData || repositoryData.permissions?.push !== true) return t('Write access to this repository is required to merge.', '合并需要此仓库的写入权限。');
       const setting = { merge: 'allow_merge_commit', squash: 'allow_squash_merge', rebase: 'allow_rebase_merge' }[method];
       if (!setting || repositoryData[setting] !== true) return t('This merge method is not enabled for this repository.', '此仓库未启用该合并方式。');
-      if (record.item.mergeable === false) return t('This PR has conflicts. Resolve them before merging.', '这条 PR 存在冲突，请解决后再合并。');
+      if (record.item.mergeable === false || record.item.mergeable_state === 'dirty') return t('This PR has conflicts. Resolve them before merging.', '这条 PR 存在冲突，请解决后再合并。');
+      if (record.item.mergeable_state === 'blocked') return t('Repository rules currently block merging.', '仓库规则暂时阻止合并。');
+      if (record.item.mergeable_state === 'behind') return t('Update the source branch before merging.', '更新来源分支后再合并。');
+      if (record.item.mergeable !== true || record.item.mergeable_state === 'unknown') return t('GitHub is calculating merge status. Refresh to check again.', 'GitHub 正在计算合并状态，刷新后再确认。');
       return '';
     }
     function prepareMerge(method) {
@@ -183,7 +193,8 @@
       record.merge.error = ''; record.merge.notice = ''; record.merge.pending = null;
       const problem = mergeProblem(record, method);
       if (problem) { record.merge.error = problem; return; }
-      record.merge.pending = { repo: record.repo, number: record.number, sha: record.headSHA, method };
+      const base = mergeBase(record.item, record.repo);
+      record.merge.pending = { repo: record.repo, number: record.number, sha: record.headSHA, method, baseRepo: base.repo, baseRef: base.ref };
     }
     function cancelMerge() {
       if (!model || model.merge.busy) return;
@@ -195,7 +206,8 @@
       const merge = record.merge, pending = merge.pending, generation = revision;
       merge.error = ''; merge.notice = '';
       if (!authorized) { merge.error = t('Choose Confirm merge to authorize this action.', '请点击“确认合并”以授权此操作。'); return; }
-      if (pending.repo !== record.repo || pending.number !== record.number || pending.sha !== record.headSHA) { merge.pending = null; merge.error = staleNotice; return; }
+      const base = mergeBase(record.item, record.repo);
+      if (pending.repo !== record.repo || pending.number !== record.number || pending.sha !== record.headSHA || base?.repo !== pending.baseRepo || base?.ref !== pending.baseRef) { merge.pending = null; merge.error = staleNotice; return; }
       merge.busy = true; mergeOperations.set(record.key, merge);
       let writeDispatched = false;
       const valid = () => active(record, generation) && merge.pending === pending;
@@ -203,8 +215,9 @@
         const result = await api(`/repos/${record.repo}/pulls/${record.number}`);
         if (!valid()) return;
         if (!result.data || result.data.number !== record.number || !['open', 'closed'].includes(result.data.state)) throw invalid();
-        const fresh = { ...record.item, ...result.data, repository: record.item.repository, id: record.item.id };
-        if (shaFor(fresh) !== pending.sha || fresh.draft === true || fresh.state !== 'open' || fresh.merged || fresh.merged_at) {
+        const fresh = { ...record.item, ...result.data, mergeable: result.data.mergeable, mergeable_state: result.data.mergeable_state, base: result.data.base, repository: record.item.repository, id: record.item.id };
+        const freshBase = mergeBase(fresh, record.repo);
+        if (shaFor(fresh) !== pending.sha || freshBase?.repo !== pending.baseRepo || freshBase?.ref !== pending.baseRef || fresh.draft === true || fresh.state !== 'open' || fresh.merged || fresh.merged_at) {
           record.item = fresh; record.headSHA = shaFor(fresh); onUpdated(fresh);
           record.sections.checks = section(); record.sections.statuses = section(); record.sections.workflows = section(); record.jobsByRun = {};
           merge.pending = null; merge.error = staleNotice; return;
@@ -213,6 +226,7 @@
         if (!valid()) return;
         if (repositoryResult.data?.full_name?.toLowerCase() !== record.repo.toLowerCase()) throw invalid();
         record.sections.repository.data = repositoryResult.data;
+        record.item = fresh; onUpdated(fresh);
         const problem = mergeProblem({ ...record, item: fresh }, pending.method, repositoryResult.data);
         if (problem) { merge.pending = null; merge.error = problem; return; }
         writeDispatched = true;

@@ -244,6 +244,13 @@ test('Merge preparation obeys repository methods, push permission, draft and con
     [repository(), pull(1, { draft: true }), 'merge', /draft/],
     [repository(), pull(1, { state: 'closed' }), 'merge', /closed/],
     [repository(), pull(1, { mergeable: false }), 'merge', /conflicts/],
+    [repository(), pull(1, { mergeable_state: 'dirty' }), 'merge', /conflicts/],
+    [repository(), pull(1, { mergeable_state: 'blocked' }), 'merge', /rules.*block/],
+    [repository(), pull(1, { mergeable_state: 'behind' }), 'merge', /Update.*branch/],
+    [repository(), pull(1, { mergeable_state: 'unknown' }), 'merge', /calculating/],
+    [repository(), pull(1, { mergeable: null }), 'merge', /calculating/],
+    [repository(), pull(1, { mergeable: undefined }), 'merge', /calculating/],
+    [repository({ archived: true }), pull(), 'merge', /archived/],
   ]) {
     const f = controller({ read: async path => path === '/repos/alice/project' ? result(repoData) : defaultRead(path) });
     await f.open(item); f.api.prepareMerge(method);
@@ -251,9 +258,72 @@ test('Merge preparation obeys repository methods, push permission, draft and con
     assert.match(f.api.current.merge.error, error);
     assert.equal(f.writes.length, 0);
   }
-  const unknown = controller(); await unknown.open(pull(1, { mergeable: null })); unknown.api.prepareMerge('merge');
-  assert.equal(unknown.api.current.merge.pending.sha, head);
-  assert.equal(unknown.writes.length, 0);
+});
+
+test('Confirmation applies the same merge blockers to the freshly read PR', async () => {
+  for (const [changes, error] of [
+    [{ draft: true }, /changed/],
+    [{ mergeable: false }, /conflicts/],
+    [{ mergeable_state: 'dirty' }, /conflicts/],
+    [{ mergeable_state: 'blocked' }, /rules.*block/],
+    [{ mergeable_state: 'behind' }, /Update.*branch/],
+    [{ mergeable_state: 'unknown' }, /calculating/],
+    [{ mergeable: null }, /calculating/],
+    [{ mergeable: undefined }, /calculating/],
+  ]) {
+    const f = controller({ read: async path => /\/pulls\/1$/.test(path) ? result(pull(1, changes)) : defaultRead(path) });
+    await f.open(); f.api.prepareMerge('merge'); await f.api.confirmMerge({ authorized: true });
+    assert.equal(f.writes.length, 0, JSON.stringify(changes));
+    assert.equal(f.api.current.merge.pending, null);
+    assert.match(f.api.current.merge.error, error);
+    assert.equal(f.api.current.item.mergeable, pull(1, changes).mergeable);
+    assert.equal(f.api.current.item.mergeable_state, changes.mergeable_state);
+  }
+});
+
+test('An omitted fresh mergeable value cannot inherit cached merge readiness', async () => {
+  const fresh = pull(); delete fresh.mergeable;
+  const f = controller({ read: async path => /\/pulls\/1$/.test(path) ? result(fresh) : defaultRead(path) });
+  await f.open(); f.api.prepareMerge('merge'); await f.api.confirmMerge({ authorized: true });
+  assert.equal(f.writes.length, 0);
+  assert.equal(f.api.current.item.mergeable, undefined);
+  assert.equal(f.api.current.merge.pending, null);
+  assert.match(f.api.current.merge.error, /calculating/);
+});
+
+test('Target repository and branch changes require confirmation again even when head SHA is unchanged', async () => {
+  for (const base of [{ ref: 'release' }, { ref: 'main', repo: { full_name: 'other/project' } }, undefined]) {
+    const f = controller({ read: async path => /\/pulls\/1$/.test(path) ? result(pull(1, { base })) : defaultRead(path) });
+    await f.open(); f.api.prepareMerge('squash');
+    assert.equal(f.api.current.merge.pending.baseRepo, 'alice/project');
+    assert.equal(f.api.current.merge.pending.baseRef, 'main');
+    await f.api.confirmMerge({ authorized: true });
+    assert.equal(f.writes.length, 0);
+    assert.equal(f.api.current.headSHA, head);
+    assert.equal(f.api.current.merge.pending, null);
+    assert.match(f.api.current.merge.error, /changed/);
+    assert.equal(f.api.current.item.base?.ref, base?.ref);
+  }
+});
+
+test('Repository owner casing alone does not change the confirmed merge target', async () => {
+  const f = controller({
+    read: async path => /\/pulls\/1$/.test(path) ? result(pull(1, { base: { ref: 'main', repo: { full_name: 'ALICE/PROJECT' } } })) : defaultRead(path),
+    write: async () => ({ status: 200, data: { merged: true } }),
+  });
+  await f.open(); f.api.prepareMerge('merge'); await f.api.confirmMerge({ authorized: true });
+  assert.equal(f.writes.length, 1);
+  assert.equal(f.writes[0].body.sha, head);
+  assert.equal(f.api.current.item.merged, true);
+});
+
+test('A repository archived after merge preparation blocks the confirmed mutation', async () => {
+  let reads = 0;
+  const f = controller({ read: async path => path === '/repos/alice/project' ? result(repository({ archived: ++reads > 1 })) : defaultRead(path) });
+  await f.open(); f.api.prepareMerge('merge'); await f.api.confirmMerge({ authorized: true });
+  assert.equal(f.writes.length, 0);
+  assert.equal(f.api.current.merge.pending, null);
+  assert.match(f.api.current.merge.error, /archived/);
 });
 
 test('SHA changes between confirmation and merge refuse mutation and clear previous-head CI', async () => {
