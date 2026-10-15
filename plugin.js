@@ -271,7 +271,7 @@
     }
     return { get current() { return model; }, reset() { ++revision; model = null; }, open, selectTab, refresh, more, jobs, setCommentDraft, postComment, prepareMerge, confirmMerge, cancelMerge, context };
   }
-  function createPullRequestView({ node, t, boundedText, displayedBody, short, itemStatus, itemDate, supportsTextEditor = true }) {
+  function createPullRequestView({ node, t, boundedText, displayedBody, short, itemStatus, itemDate, supportsTextEditor = true, supportsNativeLayout = false }) {
     const text = (value, textStyle = 'caption', tone = 'muted') => node('text', { text: boundedText(String(value ?? ''), 4096, '…'), textStyle, tone });
     const column = children => node('column', {}, children);
     const row = children => node('row', {}, children);
@@ -562,8 +562,8 @@
       if (model.tab === 'files') return filesView(model);
       return discussion(model);
     }
-    function actions(model) {
-      const item = model.item || {}, comment = model.comment || {}, merge = model.merge || {}, repo = repository(model), repoState = section(model, 'repository');
+    function commentActions(model) {
+      const comment = model.comment || {}, repo = repository(model);
       const result = [node('divider')];
       if ((model.tab === 'discussion' || model.tab === 'overview' || !model.tab) && !supportsTextEditor) {
         result.push(text(t('Update Nora to use the native comment editor.', '更新 Nora 后即可使用原生留言编辑框。')),
@@ -576,7 +576,11 @@
         if (comment.uncertain) result.push(badge(t('The response was interrupted. Refresh the discussion before sending again.', '响应中断，重新发送前请刷新讨论确认留言是否已发布。'), 'warning', 'exclamationmark.circle'));
         result.push(node('divider'));
       }
-      result.push(text(t('Merge', '合并'), 'headline', 'neutral'));
+      return result;
+    }
+    function mergeActions(model) {
+      const item = model.item || {}, merge = model.merge || {}, repo = repository(model), repoState = section(model, 'repository');
+      const result = [text(t('Merge', '合并'), 'headline', 'neutral')];
       if (merge.notice) result.push(badge(merge.notice, 'success', 'checkmark.circle'));
       if (merge.error) result.push(badge(merge.error, 'danger', 'exclamationmark.circle'));
       if (merged(item)) { result.push(text(t('This pull request has been merged.', '这个 PR 已合并。'))); return result; }
@@ -605,7 +609,149 @@
       result.push(text(t('GitHub will enforce repository rules, checks, and the current commit when you confirm.', '确认时，GitHub 会检查仓库规则、检查结果以及当前提交。')));
       return result;
     }
-    return { summary, content, actions };
+    function actions(model) { return [...commentActions(model), ...mergeActions(model)]; }
+    const nativeRow = (title, subtitle = '', properties = {}, children = []) => {
+      const { value, ...rest } = properties;
+      return node('itemRow', { text: short(title, 512), ...(subtitle ? { subtitle: short(subtitle, 512) } : {}),
+        ...rest, ...(value === 'selected' ? { value } : {}) }, children);
+    };
+    const duration = entry => {
+      const start = Date.parse(entry.started_at || ''), end = Date.parse(entry.completed_at || '');
+      if (!Number.isFinite(start) || !Number.isFinite(end) || end < start) return '';
+      const seconds = Math.round((end - start) / 1000);
+      if (seconds < 60) return `${seconds}s`;
+      const minutes = Math.floor(seconds / 60), remainder = seconds % 60;
+      return minutes < 60 ? `${minutes}m ${remainder}s` : `${Math.floor(minutes / 60)}h ${minutes % 60}m`;
+    };
+    const resultRow = (entry, title, action, properties = {}, trailing = []) => {
+      const result = status(entry), elapsed = duration(entry);
+      return nativeRow(title, '', { ...(action ? { action } : {}), symbol: result.symbol, tone: result.tone, ...properties },
+        [...(elapsed ? [text(elapsed, 'monospaced')] : []), ...trailing]);
+    };
+    function tabs(model) {
+      const labels = { discussion: t('Discussion', '讨论'), checks: t('Checks', '检查'), commits: t('Commits', '提交'), files: t('Files', '文件') };
+      const checks = headItems(model, 'checks').length + headItems(model, 'statuses').length;
+      const counts = { discussion: Number(model.item?.comments || 0), checks, commits: model.item?.commits, files: model.item?.changed_files };
+      return node('tabBar', { id: 'pr-tabs' }, Object.keys(labels).map(tab => button(labels[tab], `pr-tab:${tab}`, {
+        id: `pr-tab-${tab}`, ...(model.tab === tab || tab === 'discussion' && model.tab === 'overview' ? { value: 'selected' } : {}),
+        ...(Number.isInteger(counts[tab]) && counts[tab] > 0 ? { subtitle: String(counts[tab]) } : {}),
+      })));
+    }
+    function nativeSummary(model) {
+      const item = model.item || {}, branch = [item.base?.ref || item.base?.label, item.head?.ref || item.head?.label].filter(Boolean).join(' ← ');
+      const existing = summary(model).slice(0, -2);
+      const indicators = existing.find(value => value.type === 'row')?.children || [];
+      const concise = indicators.map(value => {
+        if (value.symbol === 'checklist') {
+          const checks = [...headItems(model, 'checks'), ...headItems(model, 'statuses')];
+          const done = checks.filter(entry => !['in_progress', 'pending', 'waiting', 'requested', 'queued', ''].includes(String(entry.conclusion || entry.state || entry.status || '').toLowerCase())).length;
+          const incomplete = ['checks', 'statuses', 'workflows'].some(name => { const state = section(model, name); return !state.loaded || state.loading || state.error || state.nextPage || state.notice; });
+          const failed = checks.filter(entry => status(entry).tone === 'danger').length;
+          const label = `CI ${done}/${checks.length}${failed ? t(` · ${failed} failed`, ` · ${failed} 项失败`) : ''}${incomplete ? t(' · partial', ' · 不完整') : ''}`;
+          return ['warning', 'danger'].includes(value.tone) ? badge(label, value.tone, value.symbol) : text(label);
+        }
+        if (value.symbol === 'play.circle') return null;
+        if (value.symbol === 'person.crop.circle.badge.checkmark') {
+          const review = section(model, 'reviews');
+          const incomplete = !review.loaded || review.loading || review.nextPage || review.notice;
+          const label = t(`Reviews ${items(model, 'reviews').length}${incomplete ? '+' : ''}`, `审查 ${items(model, 'reviews').length}${incomplete ? '+' : ''}`);
+          return ['warning', 'danger'].includes(value.tone) ? badge(label, value.tone, value.symbol) : text(label);
+        }
+        return ['warning', 'danger'].includes(value.tone) ? value : text(value.text);
+      }).filter(Boolean);
+      const missing = ['checks', 'statuses', 'workflows'].filter(name => section(model, name).error);
+      if (missing.length && !concise.some(value => value.symbol === 'checklist')) concise.push(badge(t('CI unavailable', 'CI 信息不可用'), 'warning', 'exclamationmark.circle'));
+      return [row([
+        ...(branch ? [text(branch, 'monospaced')] : []),
+        ...(Number.isInteger(item.changed_files) ? [text(t(`${item.changed_files} files`, `${item.changed_files} 个文件`))] : []),
+        ...(Number.isInteger(item.additions) ? [text(`+${item.additions}`, 'monospaced', 'success')] : []),
+        ...(Number.isInteger(item.deletions) ? [text(`−${item.deletions}`, 'monospaced', 'danger')] : []),
+        node('spacer'), ...concise,
+      ])];
+    }
+    function workflow(model, runs = headItems(model, 'workflows')) {
+      const priority = new Set(['in_progress', 'failure', 'error', 'timed_out', 'action_required', 'pending', 'waiting', 'queued', 'requested']);
+      return runs.find(entry => String(entry.id) === String(model.selectedRunID))
+        || runs.find(entry => priority.has(String(entry.conclusion || entry.status || '').toLowerCase()))
+        || runs.find(entry => /\bci\b/i.test(String(entry.name || entry.display_title || '')))
+        || runs.find(entry => entry.conclusion !== 'skipped' && entry.status !== 'skipped') || runs[0];
+    }
+    function nativeActions(model, runs, controls) {
+      const run = workflow(model, runs);
+      const left = [...controls, ...sectionState(model, 'workflows', 'GitHub Actions')];
+      const runState = section(model, 'workflows');
+      if (!run) return node('splitView', { value: model.checksDetailVisible ? 'detail' : 'list', action: 'pr-ci-back', text: t('Checks', '检查') }, [column(left), column([
+        node('emptyState', { text: runState.error ? t('Actions unavailable', '无法获取 Actions') : runState.loading ? t('Loading workflows…', '正在加载工作流…') : t('No workflow runs', '暂无工作流'),
+          subtitle: runState.error ? short(runState.error, 512) : t('GitHub Actions will appear here when a workflow starts.', '工作流启动后，GitHub Actions 会显示在这里。'), symbol: runState.error ? 'exclamationmark.circle' : 'play.circle' }),
+      ])]);
+      const visibleRuns = selectedList(runs, run.id);
+      left.push(node('menu', { text: short(run.name || run.display_title || 'GitHub Actions', 180), symbol: 'chevron.down' }, visibleRuns.map(entry => {
+        const result = status(entry);
+        return button(`${entry.name || entry.display_title || 'GitHub Actions'}${entry.run_number ? ` #${entry.run_number}` : ''}`, `pr-jobs:${entry.id}`, { symbol: result.symbol, tone: result.tone, value: String(entry.id) === String(run.id) ? 'selected' : '' });
+      })), text([run.run_number ? `#${run.run_number}` : '', run.event, date(run)].filter(Boolean).join(' · ')), node('divider'));
+      if (runs.length > visibleRuns.length) left.push(text(t('More workflows are available on GitHub.', '更多工作流可在 GitHub 查看。')));
+      const state = model.jobsByRun?.[run.id];
+      if (state?.loading) left.push(node('progress', { text: t('Loading jobs…', '正在加载任务…') }));
+      if (state?.error) left.push(text(short(state.error, 512), 'caption', 'warning'), button(t('Retry jobs', '重试任务'), `pr-jobs:${run.id}`, { disabled: !!state.loading }));
+      if (state?.notice) left.push(text(state.notice));
+      const jobs = Array.isArray(state?.items) ? state.items : [], job = jobs.find(entry => String(entry.id) === String(model.selectedJobID)) || jobs[0];
+      const visibleJobs = selectedList(jobs, job?.id);
+      left.push(...visibleJobs.map(entry => resultRow(entry, entry.name || t('Job', '任务'), `pr-job:${entry.id}`, { value: String(entry.id) === String(job?.id) ? 'selected' : '' })));
+      if (jobs.length > visibleJobs.length) left.push(text(t('Showing 30 loaded jobs. More are available on GitHub.', '显示 30 个已加载任务，更多任务可在 GitHub 查看。')));
+      if (state?.nextPage) left.push(button(t('Load more jobs', '加载更多任务'), `pr-jobs:${run.id}`, { disabled: !!state.loading }));
+      const right = [];
+      if (!state) right.push(node('emptyState', { text: t('Explore this workflow', '查看工作流'), subtitle: short(run.name || 'GitHub Actions', 256), symbol: 'list.bullet.rectangle' }, [button(t('Load jobs & steps', '加载任务与步骤'), `pr-jobs:${run.id}`, { appearance: 'secondary', symbol: 'arrow.down.circle' })]));
+      else if (!job) right.push(node('emptyState', { text: state.error ? t('Jobs unavailable', '无法获取任务') : state.loading ? t('Loading jobs…', '正在加载任务…') : t('No jobs reported', '暂无任务'),
+        ...(state.error ? { subtitle: short(state.error, 512) } : {}), symbol: state.error ? 'exclamationmark.circle' : 'list.bullet.rectangle' }));
+      else {
+        const steps = Array.isArray(job.steps) ? job.steps : [], completed = steps.filter(step => step.status === 'completed').length;
+        right.push(row([text(short(job.name || t('Job', '任务'), 512), 'headline', 'neutral'), node('spacer'), statusBadge(job), open(model, t('View job on GitHub', '在 GitHub 查看任务'), job.html_url, '/checks', { appearance: 'icon' })]),
+          text([t(`${completed}/${steps.length} steps finished`, `${completed}/${steps.length} 个步骤已结束`), duration(job)].filter(Boolean).join(' · ')), node('divider'));
+        right.push(column(steps.slice(0, 30).map(step => {
+          const label = String(step.name || '').replace(/@[a-f\d]{40}\b/gi, '').replace(/^Run (?=[\w.-]+\/)/, '');
+          return resultRow(step, `${step.number || ''} ${label}`.trim());
+        })));
+        if (steps.length > 30) right.push(text(t('Showing the first 30 steps. The complete step list is available on GitHub.', '显示前 30 个步骤，完整步骤可在 GitHub 查看。')));
+        if (!steps.length) right.push(text(t('Step details are not available for this job.', '这个任务暂未提供步骤详情。')));
+      }
+      right.push(node('divider'), open(model, t('Workflow run on GitHub', '在 GitHub 查看运行记录'), run.html_url, '/checks'));
+      return node('splitView', { id: 'pr-check-workspace', value: model.checksDetailVisible ? 'detail' : 'list', action: 'pr-ci-back', text: t('Checks', '检查') }, [column(left), column(right)]);
+    }
+    function nativeChecks(model) {
+      const checks = headItems(model, 'checks'), statuses = headItems(model, 'statuses'), workflows = headItems(model, 'workflows');
+      const sources = ['actions', 'checks', 'statuses'], source = sources.includes(model.checksSource) ? model.checksSource : workflows.length ? 'actions' : checks.length ? 'checks' : statuses.length ? 'statuses' : 'actions';
+      const counts = { actions: workflows.length, checks: checks.length, statuses: statuses.length };
+      const labels = { actions: 'Actions', checks: t('Checks', '检查项'), statuses: t('Statuses', '状态') };
+      const controls = [node('tabBar', { id: 'pr-ci-sources' }, sources.map(name => button(labels[name], `pr-ci:${name}`, { ...(source === name ? { value: 'selected' } : {}), ...(counts[name] ? { subtitle: String(counts[name]) } : {}) }))),
+        text(`${t('Commit', '提交')} ${short(model.headSHA, 8)}`, 'monospaced')];
+      if (source === 'actions') return [nativeActions(model, workflows, controls)];
+      const list = source === 'checks' ? checks : statuses, selectedID = source === 'checks' ? model.selectedCheckID : model.selectedStatusID;
+      const current = list.find(entry => String(entry.id) === String(selectedID)) || list[0], visible = selectedList(list, current?.id);
+      const left = [...controls, ...visible.map(entry => resultRow(entry, entry.name || entry.context || t('Check', '检查'), `pr-${source === 'checks' ? 'check' : 'status'}:${entry.id}`, { value: String(entry.id) === String(current?.id) ? 'selected' : '' })),
+        ...sectionState(model, source, labels[source])];
+      if (list.length > visible.length) left.push(text(t('More reported checks are available on GitHub.', '更多检查记录可在 GitHub 查看。')));
+      const sourceState = section(model, source);
+      const right = current ? [row([text(current.name || current.context || t('Check', '检查'), 'headline', 'neutral'), node('spacer'), statusBadge(current)]),
+        text([date(current), duration(current)].filter(Boolean).join(' · ')), node('divider'),
+        ...(current.output?.title ? [text(current.output.title, 'body', 'neutral')] : []),
+        ...(current.output?.summary ? [markdown(current.output.summary, 8 * 1024)] : []),
+        ...(current.description ? [text(current.description, 'body', 'neutral')] : []),
+        open(model, t('View on GitHub', '在 GitHub 查看'), current.details_url || current.html_url || current.target_url, '/checks')]
+        : [node('emptyState', { text: sourceState.error ? t('Checks unavailable', '无法获取检查信息') : sourceState.loading ? t('Loading checks…', '正在加载检查…') : t('No checks reported', '暂无检查记录'),
+          subtitle: sourceState.error ? short(sourceState.error, 512) : t('Reported results for this commit will appear here.', '这个提交的检查结果会显示在这里。'), symbol: sourceState.error ? 'exclamationmark.circle' : 'checklist' })];
+      right.push(text(t('Repository rules determine whether merging is allowed.', '能否合并由仓库规则决定。')));
+      return [node('splitView', { id: 'pr-check-workspace', value: model.checksDetailVisible ? 'detail' : 'list', action: 'pr-ci-back', text: labels[source] }, [column(left), column(right)])];
+    }
+    function nativeContent(model) {
+      let body;
+      if (model.tab === 'checks') body = nativeChecks(model);
+      else if (model.tab === 'commits') body = commitsView(model);
+      else if (model.tab === 'files') body = filesView(model);
+      else body = [...discussion(model), ...commentActions(model)];
+      if (model.mergeExpanded || model.merge?.pending) body.unshift(column([...mergeActions(model), node('divider')]));
+      return body;
+    }
+    return { summary, content, actions, tabs, nativeSummary, nativeContent, workflow, supportsNativeLayout };
   }
   const panelID = 'com.nora.github.panel';
   const clientID = 'Iv23liPZy7EARoSnYoYy';
@@ -1270,6 +1416,22 @@
   }
   function detailView() {
     const item = state.selected, status = itemStatus(item), date = itemDate(item);
+    if (state.kind === 'pulls' && pullDetails.current && pullView.supportsNativeLayout) {
+      const model = pullDetails.current;
+      const toolbar = node('toolbar', {}, [styledText(`${itemRepository(item)} / PR #${item.number}`, 'caption'), node('badge', status), node('spacer'),
+        button(t('Hand to Nora', '交给 Nora'), 'handoff-item', state.detailLoading || !!state.detailError, { appearance: 'primary', symbol: 'sparkles' }),
+        button(t('Merge…', '合并…'), 'pr-toggle-merge', !!model.merge?.busy, { appearance: 'plain', symbol: 'arrow.triangle.merge', value: model.mergeExpanded || model.merge?.pending ? 'selected' : '' }),
+        button(message.refresh, 'refresh-detail', state.detailLoading, { appearance: 'icon', symbol: 'arrow.clockwise' }),
+        button(t('View on GitHub', '在 GitHub 查看'), 'open-item', false, { appearance: 'icon', symbol: 'arrow.up.forward.square' }),
+        button(t('Close details', '关闭详情'), 'close-detail', false, { appearance: 'icon', symbol: 'xmark' })]);
+      const summary = column([styledText(boundedText(String(item.title || ''), 8192, '…'), 'title', 'neutral'),
+        row([styledText([short(item.user?.login || t('Unknown author', '未知作者'), 64), date].filter(Boolean).join(' · ')),
+          ...(itemLabels(item).length ? [styledText(boundedText(itemLabels(item).join(' · '), 512, '…'))] : [])]), ...pullView.nativeSummary(model)]);
+      const body = state.detailLoading ? [node('progress', { text: t('Loading details…', '正在加载详情…') })]
+        : state.detailError ? [node('badge', { text: short(state.detailError, 512), tone: 'danger' }), button(t('Retry details', '重试详情'), 'retry-detail')]
+          : pullView.nativeContent(model);
+      return node('detail', { id: 'item-details' }, [toolbar, summary, pullView.tabs(model), ...body]);
+    }
     const children = [
       node('toolbar', {}, [styledText(`${itemRepository(item)} · ${state.kind === 'pulls' ? 'PR' : 'Issue'} #${item.number}`, 'monospaced'),
         node('badge', status), node('spacer'),
@@ -1364,7 +1526,8 @@
     }
   });
   const pullView = createPullRequestView({ node, t, boundedText, displayedBody, short, itemStatus, itemDate,
-    supportsTextEditor: typeof nora.ui.textEditor === 'function' });
+    supportsTextEditor: typeof nora.ui.textEditor === 'function',
+    supportsNativeLayout: ['detail', 'tabBar', 'splitView', 'itemRow'].every(kind => typeof nora.ui[kind] === 'function') });
   nora.registerPanel(panelID, async (event = {}) => {
     const revision = ++renderRevision;
     state.error = '';
@@ -1435,25 +1598,58 @@
         if (state.kind === 'pulls' && pullDetails.current) await pullDetails.refresh();
         else await loadDetail(state.selected, { preserveTab: true });
       }
-      else if (action?.startsWith('pr-tab:')) await pullDetails.selectTab(action.slice(7));
+      else if (action?.startsWith('pr-tab:')) {
+        const record = pullDetails.current, tab = action.slice(7);
+        await pullDetails.selectTab(tab);
+        if (tab === 'checks' && pullView.supportsNativeLayout && record && pullDetails.current === record) {
+          const run = pullView.workflow(record);
+          if (run) {
+            record.selectedRunID = run.id;
+            record.checksDetailVisible = false;
+            if (!record.jobsByRun[run.id]) await pullDetails.jobs(run.id);
+          }
+        }
+      }
       else if (action?.startsWith('pr-more:')) await pullDetails.more(action.slice(8));
-      else if (action?.startsWith('pr-ci:') && pullDetails.current && ['actions', 'checks', 'statuses'].includes(action.slice(6))) pullDetails.current.checksSource = action.slice(6);
+      else if (action?.startsWith('pr-ci:') && pullDetails.current && ['actions', 'checks', 'statuses'].includes(action.slice(6))) {
+        pullDetails.current.checksSource = action.slice(6);
+        pullDetails.current.checksDetailVisible = false;
+      }
       else if (action?.startsWith('pr-jobs:')) {
-        const runID = Number(action.slice(8));
-        await pullDetails.jobs(runID);
-        if (pullDetails.current?.jobsByRun[runID]) {
-          pullDetails.current.selectedRunID = runID;
-          pullDetails.current.selectedJobID = null;
-          pullDetails.current.checksSource = 'actions';
+        const record = pullDetails.current, runID = Number(action.slice(8));
+        if (record && record.sections.workflows.items.some(run => run.id === runID && typeof run.head_sha === 'string' && run.head_sha.toLowerCase() === record.headSHA)) {
+          record.selectedRunID = runID;
+          record.selectedJobID = null;
+          record.checksSource = 'actions';
+          record.checksDetailVisible = false;
+          await pullDetails.jobs(runID);
         }
       }
       else if (action?.startsWith('pr-job:') && pullDetails.current) {
         const jobID = Number(action.slice(7)), model = pullDetails.current;
-        if (model.jobsByRun[model.selectedRunID]?.items.some(job => job.id === jobID)) model.selectedJobID = jobID;
+        if (model.jobsByRun[model.selectedRunID]?.items.some(job => job.id === jobID)) {
+          model.selectedJobID = jobID;
+          model.checksDetailVisible = true;
+        }
       }
+      else if (action === 'pr-ci-back' && pullDetails.current) pullDetails.current.checksDetailVisible = false;
+      else if ((action?.startsWith('pr-check:') || action?.startsWith('pr-status:')) && pullDetails.current) {
+        const model = pullDetails.current, isCheck = action.startsWith('pr-check:'), id = Number(action.slice(isCheck ? 9 : 10));
+        if (model.sections[isCheck ? 'checks' : 'statuses'].items.some(entry => entry.id === id)) {
+          model[isCheck ? 'selectedCheckID' : 'selectedStatusID'] = id;
+          model.checksDetailVisible = true;
+        }
+      }
+      else if (action === 'pr-toggle-merge' && pullDetails.current) pullDetails.current.mergeExpanded = !pullDetails.current.mergeExpanded;
       else if (action === 'pr-comment') await pullDetails.postComment({ authorized: typeof event.actionCapability === 'string' && !!event.actionCapability.trim() });
-      else if (action?.startsWith('pr-merge:')) pullDetails.prepareMerge(action.slice(9));
-      else if (action === 'pr-confirm-merge') await pullDetails.confirmMerge({ authorized: typeof event.actionCapability === 'string' && !!event.actionCapability.trim() });
+      else if (action?.startsWith('pr-merge:')) {
+        if (pullDetails.current) pullDetails.current.mergeExpanded = true;
+        pullDetails.prepareMerge(action.slice(9));
+      }
+      else if (action === 'pr-confirm-merge') {
+        if (pullDetails.current) pullDetails.current.mergeExpanded = true;
+        await pullDetails.confirmMerge({ authorized: typeof event.actionCapability === 'string' && !!event.actionCapability.trim() });
+      }
       else if (action === 'pr-cancel-merge') pullDetails.cancelMerge();
       else if (action?.startsWith('pr-open:')) await web(decodeURIComponent(action.slice(8)));
       else if (action === 'handoff-item') {

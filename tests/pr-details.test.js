@@ -492,3 +492,113 @@ test('A full PR feed with large discussion and typed draft stays within native w
   assert.ok(nodes(workspace).some(node => node.type === 'markdown' && node.text === description), 'Original 63 KiB description is readable');
   assert.ok(nodes(workspace).some(node => node.type === 'markdown' && node.text.startsWith('Comment ')), 'Discussion retains actual comment content');
 });
+
+test('Native PR reading controls preserve the draft across jobs, sources and merge preparation without writing to GitHub', async () => {
+  const baseRoute = fixtureRoute();
+  const f = fixture({ saved: connection, route: async (url, args) => {
+    assert.ok(!args.method || args.method === 'GET', 'View controls must not create a comment or merge');
+    if (url.pathname.endsWith('/check-runs')) return body({ check_runs: [{ id: 31, name: 'Lint', head_sha: head, conclusion: 'success', output: { summary: 'Selected lint result' } }] });
+    if (url.pathname.includes('/commits/') && url.pathname.endsWith('/status')) return body({ statuses: [{ id: 41, context: 'External result', state: 'pending', description: 'Waiting for report' }] });
+    if (url.pathname.endsWith('/actions/runs')) return body({ workflow_runs: [{ id: 81, name: 'Build', head_sha: head, status: 'completed', conclusion: 'success' }] });
+    if (url.pathname.endsWith('/actions/runs/81/jobs')) return body({ jobs: [{ id: 91, name: 'First job', steps: [{ number: 1, name: 'First step', status: 'completed', conclusion: 'success' }] }, { id: 92, name: 'Second job', steps: [{ number: 1, name: 'Second step', status: 'completed', conclusion: 'success' }] }] });
+    return baseRoute(url, args);
+  } });
+  const selected = await openFixturePR(f);
+  const detail = nodes(selected).find(value => value.id === 'item-details');
+  assert.equal(detail.type, 'detail');
+  assert.deepEqual(Array.from(detail.children.slice(0, 3), value => value.type), ['toolbar', 'column', 'tabBar']);
+  assert.ok(nodes(detail.children[0]).some(value => value.action === 'handoff-item'));
+  assert.ok(nodes(detail.children[0]).some(value => value.action === 'pr-toggle-merge'));
+  assert.ok(!nodes(detail).some(value => value.action?.startsWith('pr-merge:')));
+  const editor = nodes(detail).find(value => value.type === 'textEditor');
+  const draft = 'Preserve this native draft\nwhile reading CI.';
+  await f.render({ action: 'pr-toggle-merge', values: { [editor.id]: draft } });
+  await f.render({ action: 'pr-tab:checks' });
+  await f.render({ action: 'pr-jobs:81' });
+  let current = await f.render({ action: 'pr-job:92' });
+  let split = nodes(current).find(value => value.type === 'splitView');
+  assert.equal(split.value, 'detail');
+  assert.ok(texts(split.children[1]).includes('Second step'));
+  assert.ok(!texts(split.children[1]).includes('First step'));
+  current = await f.render({ action: 'pr-ci-back' });
+  assert.equal(nodes(current).find(value => value.type === 'splitView').value, 'list');
+  await f.render({ action: 'pr-ci:checks' });
+  current = await f.render({ action: 'pr-check:31' });
+  assert.ok(texts(nodes(current).find(value => value.type === 'splitView').children[1]).includes('Selected lint result'));
+  await f.render({ action: 'pr-ci:statuses' });
+  current = await f.render({ action: 'pr-status:41' });
+  assert.ok(texts(nodes(current).find(value => value.type === 'splitView').children[1]).includes('Waiting for report'));
+  await f.render({ action: 'pr-merge:merge' });
+  current = await f.render({ action: 'pr-tab:files' });
+  assert.ok(nodes(current).some(value => value.action === 'pr-confirm-merge'));
+  await f.render({ action: 'pr-cancel-merge' });
+  current = await f.render({ action: 'pr-tab:discussion' });
+  const restored = nodes(current).find(value => value.type === 'textEditor');
+  assert.equal(restored.id, editor.id);
+  assert.equal(restored.value, draft);
+  assert.ok(!nodes(current).some(value => value.action === 'pr-confirm-merge'));
+});
+
+test('Opening native checks loads the useful workflow once and retains an explicitly selected cached workflow', async () => {
+  const baseRoute = fixtureRoute(), jobReads = [];
+  const f = fixture({ saved: connection, route: async (url, args) => {
+    assert.ok(!args.method || args.method === 'GET', 'Opening checks is read only');
+    if (url.pathname.endsWith('/actions/runs')) return body({ workflow_runs: [
+      { id: 81, name: 'Skipped workflow', head_sha: head, status: 'completed', conclusion: 'skipped' },
+      { id: 82, name: 'CI', head_sha: head, status: 'completed', conclusion: 'success' },
+      { id: 83, name: 'Build active', head_sha: head, status: 'in_progress' },
+    ] });
+    const jobs = /\/actions\/runs\/(\d+)\/jobs$/.exec(url.pathname);
+    if (jobs) {
+      const id = Number(jobs[1]); jobReads.push(id);
+      return body({ jobs: [{ id: id + 100, name: `Job ${id}`, steps: [{ number: 1, name: `Useful step ${id}`, status: 'completed', conclusion: 'success' }] }] });
+    }
+    return baseRoute(url, args);
+  } });
+  await openFixturePR(f);
+  let current = await f.render({ action: 'pr-tab:checks' });
+  assert.deepEqual(jobReads, [83]);
+  assert.equal(nodes(current).find(value => value.type === 'splitView').value, 'list', 'Narrow layouts start with the loaded jobs instead of jumping into the first job');
+  assert.match(texts(nodes(current).find(value => value.type === 'splitView').children[1]), /Useful step 83/);
+  await f.render({ action: 'pr-tab:discussion' });
+  await f.render({ action: 'pr-tab:checks' });
+  assert.deepEqual(jobReads, [83], 'Returning to loaded steps cannot fetch the same jobs again');
+  await f.render({ action: 'pr-jobs:82' });
+  await f.render({ action: 'pr-tab:discussion' });
+  current = await f.render({ action: 'pr-tab:checks' });
+  assert.deepEqual(jobReads, [83, 82]);
+  assert.match(texts(nodes(current).find(value => value.type === 'splitView').children[1]), /Useful step 82/);
+});
+
+test('A late automatic workflow load cannot replace the selected workflow of a different PR', async () => {
+  const started = deferred(), release = deferred(), baseRoute = fixtureRoute();
+  let first = true;
+  const f = fixture({ saved: connection, route: async (url, args) => {
+    assert.ok(!args.method || args.method === 'GET');
+    if (url.pathname === '/issues') return body([pull(1), pull(2)]);
+    if (/\/pulls\/[12]$/.test(url.pathname)) return body(pull(Number(url.pathname.split('/').at(-1))));
+    if (url.pathname.endsWith('/actions/runs')) return body({ workflow_runs: [
+      { id: 83, name: 'CI', head_sha: head, status: 'in_progress' },
+      { id: 84, name: 'Selected workflow', head_sha: head, status: 'completed', conclusion: 'success' },
+    ] });
+    const jobs = /\/actions\/runs\/(\d+)\/jobs$/.exec(url.pathname);
+    if (jobs) {
+      const id = Number(jobs[1]);
+      if (id === 83 && first) { first = false; started.resolve(); await release.promise; }
+      return body({ jobs: [{ id: id + 100, name: `Job ${id}`, steps: [{ number: 1, name: `Step ${id}` }] }] });
+    }
+    return baseRoute(url, args);
+  } });
+  await openFixturePR(f);
+  const old = f.render({ action: 'pr-tab:checks' });
+  await started.promise;
+  await f.render({ action: 'item:item-alice/project/2' });
+  await f.render({ action: 'pr-tab:checks' });
+  await f.render({ action: 'pr-jobs:84' });
+  release.resolve();
+  const current = await old;
+  assert.equal(current.value, 'item-alice/project/2');
+  const split = nodes(current).find(value => value.type === 'splitView');
+  assert.match(texts(split.children[1]), /Step 84/);
+  assert.ok(nodes(split.children[0]).some(value => value.action === 'pr-jobs:84' && value.value === 'selected'));
+});
