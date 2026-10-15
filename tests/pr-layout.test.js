@@ -429,6 +429,22 @@ test('Native files show one original patch beside a compact selectable file list
   assert.equal(right.filter(value => value.type === 'diff').length, 1);
 });
 
+test('Native file totals show the full PR change count only in the file list heading', () => {
+  const current = model(); current.tab = 'files';
+  current.item.additions = 455; current.item.deletions = 21;
+  current.sections.files = section([changedFile()], { nextPage: 2 });
+  const split = nativeFileView(current)[0], left = split.children[0].children;
+  assert.equal(left[0].type, 'row');
+  assert.equal(left[1].id, 'pr-file-totals');
+  assert.deepEqual(Array.from(left[1].children, value => value.text), ['+455', '−21']);
+  assert.ok(left[1].children.every(value => value.type === 'badge' && value.appearance === 'plain'));
+  assert.ok(!flatten(view('en', { supportsNativeLayout: true }).nativeSummary(current)).some(value => /455|21/.test(value.text || '')));
+  current.item.additions = 0; current.item.deletions = 0;
+  assert.deepEqual(Array.from(nativeFileView(current)[0].children[0].children[1].children, value => value.text), ['+0', '−0']);
+  delete current.item.additions; delete current.item.deletions;
+  assert.ok(!flatten(nativeFileView(current)).some(value => value.id === 'pr-file-totals'), 'Unavailable PR totals must not be fabricated from the loaded page of files');
+});
+
 test('Hosts without the diff primitive keep native PR tabs and the compatible file view', () => {
   const current = model(); current.tab = 'files'; current.sections.files = section([changedFile()]);
   const api = view('en', { supportsNativeLayout: true, supportsNativeDiff: false });

@@ -815,6 +815,11 @@
       const list = items(model, 'files'), state = section(model, 'files');
       const selected = list.find(file => file.filename === model.selectedFileID) || list[0];
       const left = [row([text(t('Changed files', '文件变更'), 'headline', 'neutral'), node('spacer'), text(`${list.length}${state.nextPage ? '+' : ''}`, 'monospaced')])];
+      const totals = [
+        ...(Number.isInteger(model.item?.additions) ? [node('badge', { text: `+${model.item.additions}`, tone: 'success', appearance: 'plain' })] : []),
+        ...(Number.isInteger(model.item?.deletions) ? [node('badge', { text: `−${model.item.deletions}`, tone: 'danger', appearance: 'plain' })] : []),
+      ];
+      if (totals.length) left.push(node('row', { id: 'pr-file-totals' }, totals));
       left.push(...list.map((file, index) => {
         const path = String(file.filename || t('File', '文件')), slash = path.lastIndexOf('/'), result = fileState(file);
         return nativeRow(boundedText(path.slice(slash + 1), 128, '…'), slash >= 0 ? boundedText(path.slice(0, slash), 192, '…') : '',
