@@ -315,3 +315,97 @@ test('A failed native comment keeps the original draft and input identity while 
   assert.equal(restored.value, editor.value);
   assert.equal(restored.id, editor.id);
 });
+
+
+const filePatch = '@@ -1,2 +1,2 @@\n-const before = "old";\n+const after = "new";\n export { value };';
+const changedFile = (filename = 'src/main.ts', changes = {}) => ({ filename, patch: filePatch, status: 'modified', additions: 1, deletions: 1, blob_url: `https://github.com/owner/repo/blob/${headSHA}/${filename}`, ...changes });
+const nativeFileView = current => view('en', { supportsNativeLayout: true, supportsNativeDiff: true }).nativeContent(current);
+
+test('Native files show one original patch beside a compact selectable file list', () => {
+  const current = model();
+  current.tab = 'files'; current.selectedFileID = 'src/second.swift'; current.filesDetailVisible = true;
+  current.sections.files = section([changedFile(), changedFile('src/second.swift', { patch: '@@ -1 +1 @@\n-let old = 1\n+let new = 2' })]);
+  const content = nativeFileView(current), split = content[0];
+  assert.equal(content.length, 1);
+  assert.equal(split.type, 'splitView'); assert.equal(split.id, 'pr-file-workspace');
+  assert.equal(split.action, 'pr-files-back'); assert.equal(split.value, 'detail');
+  const left = flatten([split.children[0]]), right = flatten([split.children[1]]);
+  assert.ok(left.some(value => value.type === 'itemRow' && value.action === 'pr-file:1' && value.value === 'selected' && value.text === 'second.swift'));
+  assert.ok(left.some(value => value.type === 'itemRow' && value.action === 'pr-file:0'));
+  const diff = right.find(value => value.type === 'diff');
+  assert.equal(diff.text, current.sections.files.items[1].patch);
+  assert.equal(diff.subtitle, 'src/second.swift'); assert.equal(diff.value, 'unified');
+  assert.equal(right.at(-1), diff, 'The native diff receives the remaining pane height');
+  assert.ok(!right.some(value => value.type === 'markdown'), 'The selected patch is never another markdown code box');
+  assert.ok(!diff.action && !diff.symbol && !diff.tone && !diff.children.length);
+  assert.equal(right.filter(value => value.type === 'diff').length, 1);
+});
+
+test('Hosts without the diff primitive keep native PR tabs and the compatible file view', () => {
+  const current = model(); current.tab = 'files'; current.sections.files = section([changedFile()]);
+  const api = view('en', { supportsNativeLayout: true, supportsNativeDiff: false });
+  assert.equal(api.tabs(current).type, 'tabBar');
+  const content = flatten(api.nativeContent(current));
+  assert.ok(content.some(value => value.type === 'markdown' && value.text.includes(filePatch)));
+  assert.ok(!content.some(value => value.type === 'diff' || value.type === 'splitView'));
+});
+
+test('The native diff preserves complete Unicode patches through 64 KiB and names containing spaces', () => {
+  const current = model(); current.tab = 'files';
+  const patch = '@@ -0,0 +1,1 @@\n+' + '🙂汉'.repeat(8000);
+  assert.ok(Buffer.byteLength(patch) > 8 * 1024 && Buffer.byteLength(patch) < 64 * 1024);
+  current.sections.files = section([changedFile('src/你好 world.ts', { patch, additions: 1, deletions: 0 })]);
+  const nodes = flatten(nativeFileView(current)), diff = nodes.find(value => value.type === 'diff');
+  assert.equal(diff.text, patch); assert.equal(diff.subtitle, 'src/你好 world.ts');
+  assert.ok(!nodes.some(value => /shortened/.test(value.text || '')));
+});
+
+test('Large diffs end at an original complete line and explicitly disclose the preview boundary', () => {
+  const current = model(); current.tab = 'files';
+  const patch = '@@ -0,0 +1,3000 @@\n' + '+🙂汉字'.repeat(1).concat('\n').repeat(8000);
+  current.sections.files = section([changedFile('src/large.ts', { patch, additions: 8000, deletions: 0 })]);
+  const nodes = flatten(nativeFileView(current)), diff = nodes.find(value => value.type === 'diff');
+  assert.ok(diff && Buffer.byteLength(diff.text) <= 64 * 1024);
+  assert.ok(patch.startsWith(diff.text)); assert.ok(diff.text.endsWith('\n'));
+  assert.ok(!diff.text.includes('�') && !diff.text.includes('shortened'));
+  assert.ok(nodes.some(value => value.tone === 'warning' && /64 KiB/.test(value.text || '')));
+  assert.ok(nodes.some(value => value.action?.startsWith('pr-open:')));
+  current.sections.files.items[0].patch = '@@ -0,0 +1 @@' + '🙂'.repeat(20000);
+  assert.ok(!flatten(nativeFileView(current)).some(value => value.type === 'diff'), 'A single oversized line is not fabricated into a patch');
+});
+
+test('Binary files, renames and partial GitHub patches explain unavailable or incomplete content', () => {
+  const current = model(); current.tab = 'files';
+  current.sections.files = section([changedFile('assets/new.bin', { previous_filename: 'assets/old.bin', status: 'renamed', patch: undefined, additions: 0, deletions: 0 })]);
+  let nodes = flatten(nativeFileView(current));
+  assert.ok(nodes.some(value => value.text === 'Previously assets/old.bin'));
+  assert.ok(nodes.some(value => value.type === 'emptyState' && value.text === 'No text diff provided'));
+  assert.ok(!nodes.some(value => value.type === 'diff'));
+  current.sections.files = section([changedFile('src/partial.ts', { additions: 4 })]);
+  nodes = flatten(nativeFileView(current));
+  assert.ok(nodes.some(value => value.type === 'diff' && value.text === filePatch));
+  assert.ok(nodes.some(value => /GitHub returned only part/.test(value.text || '')));
+});
+
+test('Unsafe filename hints stay static labels and cannot create unsupported native diff nodes', () => {
+  const current = model(); current.tab = 'files';
+  for (const filename of ['src/line\nfeed.ts', 'src/a\u2028b.ts', 'src/hidden\u202eb.ts', 'x'.repeat(4097)]) {
+    current.sections.files = section([changedFile(filename)]);
+    const nodes = flatten(nativeFileView(current));
+    assert.ok(!nodes.some(value => value.type === 'diff'));
+    assert.ok(nodes.some(value => value.type === 'emptyState' && value.text === 'Preview unavailable'));
+  }
+});
+
+test('File loading and pagination remain visible beside the selected diff', () => {
+  const current = model(); current.tab = 'files';
+  current.sections.files = section([changedFile()], { nextPage: 2 });
+  let nodes = flatten(nativeFileView(current));
+  assert.ok(nodes.some(value => value.type === 'diff'));
+  assert.ok(nodes.some(value => value.action === 'pr-more:files' && /Load more/.test(value.text)));
+  current.sections.files.error = 'Files permission denied';
+  nodes = flatten(nativeFileView(current));
+  assert.ok(nodes.some(value => value.action === 'pr-more:files' && value.text === 'Try again'));
+  assert.ok(nodes.some(value => /Files permission denied/.test(value.text || '')));
+  assert.ok(nodes.some(value => value.type === 'diff' && value.text === filePatch));
+});

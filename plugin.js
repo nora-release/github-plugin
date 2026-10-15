@@ -84,6 +84,7 @@
       const same = previous?.key === info.key;
       const record = { ...info, item, headSHA: shaFor(item), tab: preserveTab && same ? previous.tab : 'discussion', generation: ++revision,
         sections: Object.fromEntries(names.map(name => [name, section()])), jobsByRun: {},
+        selectedFileID: preserveTab && same ? previous.selectedFileID : null, filesDetailVisible: preserveTab && same && previous.filesDetailVisible === true,
         comment: { fieldID: same ? previous.comment.fieldID : `pr-comment-${info.key}`, draft: same ? previous.comment.draft : '', error: same && previous.comment.uncertain ? previous.comment.error : '', notice: '', busy: commentOperations.has(info.key), uncertain: same ? previous.comment.uncertain : false },
         merge: { pending: null, error: '', notice: '', busy: mergeOperations.has(info.key) } };
       record.sections.repository.data = null;
@@ -271,7 +272,7 @@
     }
     return { get current() { return model; }, reset() { ++revision; model = null; }, open, selectTab, refresh, more, jobs, setCommentDraft, postComment, prepareMerge, confirmMerge, cancelMerge, context };
   }
-  function createPullRequestView({ node, t, boundedText, displayedBody, short, itemStatus, itemDate, supportsTextEditor = true, supportsNativeLayout = false }) {
+  function createPullRequestView({ node, t, boundedText, displayedBody, short, itemStatus, itemDate, supportsTextEditor = true, supportsNativeLayout = false, supportsNativeDiff = false }) {
     const text = (value, textStyle = 'caption', tone = 'muted') => node('text', { text: boundedText(String(value ?? ''), 4096, '…'), textStyle, tone });
     const column = children => node('column', {}, children);
     const row = children => node('row', {}, children);
@@ -742,11 +743,60 @@
       right.push(text(t('Repository rules determine whether merging is allowed.', '能否合并由仓库规则决定。')));
       return [node('splitView', { id: 'pr-check-workspace', value: model.checksDetailVisible ? 'detail' : 'list', action: 'pr-ci-back', text: labels[source] }, [column(left), column(right)])];
     }
+    const fileState = file => {
+      const labels = { added: t('Added', '新增'), removed: t('Removed', '删除'), modified: t('Modified', '修改'), renamed: t('Renamed', '重命名'), copied: t('Copied', '复制'), changed: t('Changed', '变更'), unchanged: t('Unchanged', '未变更') };
+      return { text: labels[file.status] || t('Changed', '变更'), tone: file.status === 'added' ? 'success' : file.status === 'removed' ? 'danger' : 'muted',
+        symbol: { added: 'doc.badge.plus', removed: 'doc.badge.minus', renamed: 'arrow.right', copied: 'doc.on.doc' }[file.status] || 'doc.text' };
+    };
+    const fileCounts = file => [text(`+${Number.isInteger(file.additions) ? file.additions : 0}`, 'monospaced', 'success'), text(`−${Number.isInteger(file.deletions) ? file.deletions : 0}`, 'monospaced', 'danger')];
+    function nativeFiles(model) {
+      const list = items(model, 'files'), state = section(model, 'files');
+      const selected = list.find(file => file.filename === model.selectedFileID) || list[0];
+      const left = [row([text(t('Changed files', '文件变更'), 'headline', 'neutral'), node('spacer'), text(`${list.length}${state.nextPage ? '+' : ''}`, 'monospaced')])];
+      left.push(...list.map((file, index) => {
+        const path = String(file.filename || t('File', '文件')), slash = path.lastIndexOf('/'), result = fileState(file);
+        return nativeRow(boundedText(path.slice(slash + 1), 128, '…'), slash >= 0 ? boundedText(path.slice(0, slash), 192, '…') : '',
+          { action: `pr-file:${index}`, symbol: result.symbol, tone: result.tone, ...(file === selected ? { value: 'selected' } : {}) }, [row(fileCounts(file))]);
+      }), ...sectionState(model, 'files', t('Files', '文件')));
+      const right = [];
+      if (!selected) right.push(node('emptyState', { text: state.error ? t('Files unavailable', '无法获取文件') : state.loading || !state.loaded ? t('Loading changed files…', '正在加载变更文件…') : t('No changed files', '暂无文件变更'),
+        subtitle: state.error ? short(state.error, 512) : t('Select a changed file to review its diff.', '选择变更文件即可查看差异。'), symbol: state.error ? 'exclamationmark.circle' : 'doc.text' }));
+      else {
+        const result = fileState(selected), path = String(selected.filename || ''), source = typeof selected.patch === 'string' ? selected.patch : '';
+        right.push(row([text(path || t('File', '文件'), 'monospaced', 'neutral'), node('spacer'), badge(result.text, result.tone), ...fileCounts(selected),
+          open(model, t('View file on GitHub', '在 GitHub 查看文件'), selected.blob_url, '/files', { appearance: 'icon' })]));
+        if (selected.previous_filename) right.push(text(t(`Previously ${selected.previous_filename}`, `原文件名 · ${selected.previous_filename}`), 'monospaced'));
+        const safePath = path.length > 0 && bytes(path) <= 4096 && !/[\p{Cc}\p{Cf}\p{Zl}\p{Zp}]/u.test(path);
+        if (!safePath) right.push(node('emptyState', { text: t('Preview unavailable', '无法预览'), subtitle: t('This file name cannot be shown in the native diff viewer. View the file on GitHub.', '此文件名无法在原生差异视图中显示，请在 GitHub 查看。'), symbol: 'doc.text' }));
+        else if (!source) right.push(node('emptyState', { text: t('No text diff provided', '未提供文本差异'), subtitle: t('GitHub did not return a text patch. The file may be binary, too large, or renamed without content changes.', 'GitHub 未返回文本差异；文件可能为二进制、过大，或仅重命名而没有内容变化。'), symbol: 'doc.text' }));
+        else {
+          let patch = source;
+          if (bytes(source) > 64 * 1024) {
+            const prefix = boundedText(source, 64 * 1024);
+            patch = prefix.slice(0, prefix.lastIndexOf('\n') + 1);
+            right.push(text(t('Preview shortened to complete lines within 64 KiB. View the full diff on GitHub.', '预览仅保留 64 KiB 内的完整行，完整差异请在 GitHub 查看。'), 'caption', 'warning'));
+          }
+          let additions = 0, deletions = 0, inHunk = false;
+          for (const line of source.split('\n')) {
+            if (line.startsWith('@@ ')) { inHunk = true; continue; }
+            if (!inHunk) continue;
+            if (line.startsWith('+')) additions++;
+            else if (line.startsWith('-')) deletions++;
+          }
+          if (Number.isInteger(selected.additions) && additions < selected.additions || Number.isInteger(selected.deletions) && deletions < selected.deletions) {
+            right.push(text(t('GitHub returned only part of this file’s diff. View the complete change on GitHub.', 'GitHub 仅返回了此文件的部分差异，完整变更请在 GitHub 查看。'), 'caption', 'warning'));
+          }
+          if (patch) right.push(node('diff', { id: `pr-file-diff-${list.indexOf(selected)}`, text: patch, subtitle: path, value: 'unified' }));
+          else right.push(node('emptyState', { text: t('Diff exceeds the preview limit', '差异超出预览范围'), subtitle: t('A complete diff line exceeds 64 KiB. View this file on GitHub.', '一行差异已超过 64 KiB，请在 GitHub 查看此文件。'), symbol: 'doc.text' }));
+        }
+      }
+      return [node('splitView', { id: 'pr-file-workspace', value: model.filesDetailVisible ? 'detail' : 'list', action: 'pr-files-back', text: t('Files', '文件') }, [column(left), column(right)])];
+    }
     function nativeContent(model) {
       let body;
       if (model.tab === 'checks') body = nativeChecks(model);
       else if (model.tab === 'commits') body = commitsView(model);
-      else if (model.tab === 'files') body = filesView(model);
+      else if (model.tab === 'files') body = supportsNativeDiff ? nativeFiles(model) : filesView(model);
       else body = [...discussion(model), ...commentActions(model)];
       if (model.mergeExpanded || model.merge?.pending) body.unshift(column([...mergeActions(model), node('divider')]));
       return body;
@@ -1526,7 +1576,7 @@
     }
   });
   const pullView = createPullRequestView({ node, t, boundedText, displayedBody, short, itemStatus, itemDate,
-    supportsTextEditor: typeof nora.ui.textEditor === 'function',
+    supportsTextEditor: typeof nora.ui.textEditor === 'function', supportsNativeDiff: typeof nora.ui.diff === 'function',
     supportsNativeLayout: ['detail', 'tabBar', 'splitView', 'itemRow'].every(kind => typeof nora.ui[kind] === 'function') });
   nora.registerPanel(panelID, async (event = {}) => {
     const revision = ++renderRevision;
@@ -1611,6 +1661,14 @@
         }
       }
       else if (action?.startsWith('pr-more:')) await pullDetails.more(action.slice(8));
+      else if (action?.startsWith('pr-file:') && pullDetails.current) {
+        const index = Number(action.slice(8)), model = pullDetails.current;
+        if (/^\d+$/.test(action.slice(8)) && Number.isSafeInteger(index) && index >= 0 && index < model.sections.files.items.length) {
+          model.selectedFileID = model.sections.files.items[index].filename;
+          model.filesDetailVisible = true;
+        }
+      }
+      else if (action === 'pr-files-back' && pullDetails.current) pullDetails.current.filesDetailVisible = false;
       else if (action?.startsWith('pr-ci:') && pullDetails.current && ['actions', 'checks', 'statuses'].includes(action.slice(6))) {
         pullDetails.current.checksSource = action.slice(6);
         pullDetails.current.checksDetailVisible = false;
