@@ -226,6 +226,73 @@ test('Native PR tabs keep one current section and expose counts separately from 
   }
 });
 
+test('Native fixed headings keep only branch context while readiness stays with the discussion', () => {
+  const current = model();
+  current.item.changed_files = 29; current.item.additions = 459; current.item.deletions = 83;
+  current.sections.checks = section([check(1, { conclusion: 'failure' })]);
+  const api = view('en', { supportsNativeLayout: true });
+  const heading = flatten(api.nativeSummary(current));
+  assert.equal(heading.length, 1);
+  assert.equal(heading[0].text, 'main ← change');
+  assert.ok(!heading.some(value => value.type === 'badge' || /CI|459|83|29 files/.test(value.text || '')));
+  current.tab = 'discussion';
+  const discussion = api.nativeContent(current);
+  const description = discussion.find(value => value.id === 'pr-description');
+  assert.equal(description.appearance, 'secondary');
+  assert.ok(flatten([description]).some(value => value.type === 'markdown' && value.text === 'PR description'));
+  const readiness = discussion.find(value => value.id === 'pr-readiness');
+  assert.ok(readiness.children.some(value => value.action === 'pr-tab:checks' && value.tone === 'danger' && /failed/.test(value.text)));
+  current.tab = 'files';
+  assert.ok(!flatten(api.nativeContent(current)).some(value => value.id === 'pr-readiness'), 'The file reading area must not repeat discussion status cards');
+});
+
+test('Native discussion distinguishes messages from activity without repeating generic badges or headings', () => {
+  const current = model(); current.tab = 'discussion';
+  current.item.user = { login: 'author', html_url: 'https://github.com/author' };
+  current.item.created_at = '2026-10-14T00:00:00Z';
+  current.sections.comments = section([{ id: 1, body: 'Please preserve this comment.', user: { login: 'reviewer' }, created_at: '2026-10-15T00:00:00Z' }]);
+  current.sections.timeline = section([{ id: 2, event: 'ready_for_review', actor: { login: 'author' }, created_at: '2026-10-15T00:01:00Z' }]);
+  const content = view('en', { supportsNativeLayout: true }).nativeContent(current), nodes = flatten(content);
+  const comment = content.find(value => value.children?.some(child => child.type === 'markdown' && child.text === 'Please preserve this comment.'));
+  assert.equal(comment.appearance, 'secondary');
+  const event = content.find(value => flatten([value]).some(child => /marked ready for review/.test(child.text || '')));
+  assert.equal(event.appearance, 'plain');
+  assert.ok(!nodes.some(value => value.type === 'badge' && ['Comment', 'Activity', 'Code comment'].includes(value.text)));
+  assert.ok(!nodes.some(value => value.type === 'text' && ['Description', 'Conversation & activity'].includes(value.text)));
+  const author = nodes.find(value => value.type === 'button' && value.text === 'author');
+  assert.equal(decodeURIComponent(author.action.slice('pr-open:'.length)), 'https://github.com/author');
+  assert.equal(nodes.filter(value => value.type === 'textEditor').length, 1);
+  assert.ok(nodes.some(value => value.action === 'pr-comment'));
+});
+
+test('Native incomplete or unknown results cannot show a successful readiness indicator', () => {
+  const current = model(); current.tab = 'discussion';
+  const api = view('en', { supportsNativeLayout: true });
+  for (const changes of [{ error: 'Check refresh failed' }, { loaded: false, loading: true }, { nextPage: 2 }]) {
+    current.sections.checks = section([check(1)], changes);
+    const indicator = flatten(api.nativeContent(current)).find(value => value.action === 'pr-tab:checks' && value.type === 'itemRow');
+    assert.equal(indicator.tone, 'warning');
+    assert.match(indicator.text, /partial/);
+  }
+  current.sections.checks = section([check(1, { status: '', conclusion: '' })]);
+  const indicator = flatten(api.nativeContent(current)).find(value => value.action === 'pr-tab:checks' && value.type === 'itemRow');
+  assert.equal(indicator.tone, 'muted');
+  assert.match(indicator.text, /pending/);
+});
+
+test('Native commits lead with the message and preserve author, SHA and extended body', () => {
+  const current = model(); current.tab = 'commits';
+  current.sections.commits = section([{ sha: headSHA, html_url: `https://github.com/owner/repo/commit/${headSHA}`, author: { login: 'author' },
+    commit: { message: 'Fix the selection when switching files\n\nPreserve the cursor and scroll position.', author: { name: 'Author', date: '2026-10-15T00:00:00Z' } } }]);
+  const commit = view('en', { supportsNativeLayout: true }).nativeContent(current)[0];
+  assert.equal(commit.appearance, 'plain');
+  assert.equal(commit.children[0].text, 'Fix the selection when switching files');
+  const nodes = flatten([commit]);
+  assert.ok(nodes.some(value => value.text === headSHA.slice(0, 8)));
+  assert.ok(nodes.some(value => value.text === 'author'));
+  assert.ok(nodes.some(value => value.type === 'markdown' && value.text === 'Preserve the cursor and scroll position.'));
+});
+
 test('Native CI separates many jobs from the selected steps and shows short step names with exact duration', () => {
   const current = model();
   current.sections.workflows = section(Array.from({ length: 30 }, (_, index) => run(100 + index)));
@@ -370,6 +437,10 @@ test('Large diffs end at an original complete line and explicitly disclose the p
   assert.ok(!diff.text.includes('�') && !diff.text.includes('shortened'));
   assert.ok(nodes.some(value => value.tone === 'warning' && /64 KiB/.test(value.text || '')));
   assert.ok(nodes.some(value => value.action?.startsWith('pr-open:')));
+  const right = nativeFileView(current)[0].children[1].children;
+  assert.equal(right.at(-1).type, 'diff');
+  assert.equal(right.at(-2).type, 'row', 'The file header remains adjacent to the diff so the host can show one toolbar');
+  assert.ok(right.slice(0, -2).some(value => /64 KiB/.test(value.text || '')), 'Preview notices appear before the combined file toolbar');
   current.sections.files.items[0].patch = '@@ -0,0 +1 @@' + '🙂'.repeat(20000);
   assert.ok(!flatten(nativeFileView(current)).some(value => value.type === 'diff'), 'A single oversized line is not fabricated into a patch');
 });

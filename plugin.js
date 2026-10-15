@@ -272,7 +272,7 @@
     }
     return { get current() { return model; }, reset() { ++revision; model = null; }, open, selectTab, refresh, more, jobs, setCommentDraft, postComment, prepareMerge, confirmMerge, cancelMerge, context };
   }
-  function createPullRequestView({ node, t, boundedText, displayedBody, short, itemStatus, itemDate, supportsTextEditor = true, supportsNativeLayout = false, supportsNativeDiff = false }) {
+  function createPullRequestView({ node, t, boundedText, displayedBody, short, itemStatus, itemDate, avatarFor = () => null, supportsTextEditor = true, supportsNativeLayout = false, supportsNativeDiff = false }) {
     const text = (value, textStyle = 'caption', tone = 'muted') => node('text', { text: boundedText(String(value ?? ''), 4096, '…'), textStyle, tone });
     const column = children => node('column', {}, children);
     const row = children => node('row', {}, children);
@@ -292,8 +292,8 @@
     const account = entry => entry.user || entry.actor || entry.author || {};
     const authorLabel = entry => short(account(entry).login || entry.commit?.author?.name || t('GitHub', 'GitHub'), 80);
     const authorButton = (model, entry, fallback, label = authorLabel(entry)) => {
-      const author = account(entry), avatar = entry.avatarBase64 || author.avatarBase64;
-      return button(label, openAction(entry.html_url, fallback), { tone: 'neutral', ...(avatar ? { avatarBase64: avatar } : { symbol: 'person.crop.circle' }) });
+      const author = account(entry), avatar = entry.avatarBase64 || author.avatarBase64 || avatarFor(author.login);
+      return button(label, openAction(author.html_url, fallback), { tone: 'neutral', ...(avatar ? { avatarBase64: avatar } : { symbol: 'person.crop.circle' }) });
     };
     const markdown = (value, maximum = 8 * 1024) => node('markdown', { text: boundedText(String(value || ''), maximum, '\n\n' + t('Content shortened. View on GitHub for the full text.', '内容已缩短，完整内容可在 GitHub 查看。')) });
     const code = (value, language = '') => {
@@ -433,7 +433,7 @@
       if (entry.event === 'cross-referenced') return t(`referenced this PR${entry.source?.issue?.title ? ` · ${entry.source.issue.title}` : ''}`, `引用了这个 PR${entry.source?.issue?.title ? ` · ${entry.source.issue.title}` : ''}`);
       return labels[entry.event] || t(`Activity · ${String(entry.event || '').replace(/_/g, ' ')}`, `动态 · ${String(entry.event || '').replace(/_/g, ' ')}`);
     }
-    function discussion(model) {
+    function discussionActivity(model) {
       const sources = [['comments', t('Comments', '留言')], ['reviews', t('Reviews', '审查')], ['reviewComments', t('Inline comments', '代码留言')], ['timeline', t('Activity', '动态')]];
       const activity = [];
       const known = Object.fromEntries(['comments', 'reviews', 'reviewComments'].map(name => [name, new Set(items(model, name).map(entry => String(entry.id)))]));
@@ -450,6 +450,10 @@
         activity.push({ source, entry, timestamp: entry.submitted_at || entry.created_at || entry.commit?.author?.date || '' });
       }
       activity.sort((a, b) => a.timestamp.localeCompare(b.timestamp) || String(a.entry.id || '').localeCompare(String(b.entry.id || '')));
+      return { sources, activity };
+    }
+    function discussion(model) {
+      const { sources, activity } = discussionActivity(model);
       const cards = activity.slice(-80).map(({ source, entry }) => {
         const nodes = [row([authorButton(model, entry, prURL(model)), text(date(entry)), node('spacer'),
           ...(source === 'reviews' ? [reviewState(entry.state)] : [badge(source === 'reviewComments' ? t('Code comment', '代码留言') : source === 'comments' ? t('Comment', '留言') : t('Activity', '动态'))])])];
@@ -640,35 +644,93 @@
     }
     function nativeSummary(model) {
       const item = model.item || {}, branch = [item.base?.ref || item.base?.label, item.head?.ref || item.head?.label].filter(Boolean).join(' ← ');
-      const existing = summary(model).slice(0, -2);
-      const indicators = existing.find(value => value.type === 'row')?.children || [];
-      const concise = indicators.map(value => {
-        if (value.symbol === 'checklist') {
-          const checks = [...headItems(model, 'checks'), ...headItems(model, 'statuses')];
-          const done = checks.filter(entry => !['in_progress', 'pending', 'waiting', 'requested', 'queued', ''].includes(String(entry.conclusion || entry.state || entry.status || '').toLowerCase())).length;
-          const incomplete = ['checks', 'statuses', 'workflows'].some(name => { const state = section(model, name); return !state.loaded || state.loading || state.error || state.nextPage || state.notice; });
-          const failed = checks.filter(entry => status(entry).tone === 'danger').length;
-          const label = `CI ${done}/${checks.length}${failed ? t(` · ${failed} failed`, ` · ${failed} 项失败`) : ''}${incomplete ? t(' · partial', ' · 不完整') : ''}`;
-          return ['warning', 'danger'].includes(value.tone) ? badge(label, value.tone, value.symbol) : text(label);
+      return branch ? [text(branch, 'monospaced')] : [];
+    }
+    function nativeReadiness(model) {
+      const checks = [...headItems(model, 'checks'), ...headItems(model, 'statuses')], runs = headItems(model, 'workflows');
+      const incomplete = ['checks', 'statuses', 'workflows'].some(name => { const value = section(model, name); return !value.loaded || value.loading || value.error || value.nextPage || value.notice; });
+      const results = checks.length ? checks : runs;
+      const failed = results.filter(entry => status(entry).tone === 'danger').length;
+      const pending = results.filter(entry => ['in_progress', 'pending', 'waiting', 'requested', 'queued'].includes(String(entry.conclusion || entry.state || entry.status || '').toLowerCase())).length;
+      const terminal = new Set(['success', 'failure', 'error', 'timed_out', 'cancelled', 'skipped', 'neutral', 'action_required', 'stale', 'completed']);
+      const done = results.filter(entry => terminal.has(String(entry.conclusion || entry.state || entry.status || '').toLowerCase())).length;
+      const checkLabel = !results.length ? t('No checks reported', '暂无检查记录')
+        : failed ? t(`${failed} ${failed === 1 ? 'check failed' : 'checks failed'}`, `${failed} 项检查失败`)
+          : pending ? t(`${pending} ${pending === 1 ? 'check running' : 'checks running'}`, `${pending} 项检查运行中`)
+            : done === results.length ? t(`${done} ${done === 1 ? 'check completed' : 'checks completed'}`, `${done} 项检查已结束`)
+              : t('Check status pending', '检查状态待确认');
+      const allSuccessful = results.length > 0 && results.every(entry => status(entry).tone === 'success');
+      const checkTone = failed ? 'danger' : incomplete || pending ? 'warning' : allSuccessful ? 'success' : 'muted';
+      const latestReviews = new Map();
+      for (const review of items(model, 'reviews').slice().sort((a, b) => String(a.submitted_at || '').localeCompare(String(b.submitted_at || '')))) {
+        if (review.user?.login && ['APPROVED', 'CHANGES_REQUESTED', 'DISMISSED'].includes(String(review.state).toUpperCase())) latestReviews.set(review.user.login, String(review.state).toUpperCase());
+      }
+      const approvals = [...latestReviews.values()].filter(value => value === 'APPROVED').length, requested = [...latestReviews.values()].filter(value => value === 'CHANGES_REQUESTED').length;
+      const reviews = section(model, 'reviews'), reviewsIncomplete = !reviews.loaded || reviews.loading || reviews.error || reviews.nextPage || reviews.notice;
+      const reviewLabel = requested ? t('Changes requested', '有审查要求修改') : approvals ? t(`${approvals} ${approvals === 1 ? 'approval' : 'approvals'}`, `${approvals} 人批准`) : t('No reviews yet', '暂无审查');
+      const merge = mergeState(model.item || {});
+      return node('column', { id: 'pr-readiness', appearance: 'secondary' }, [
+        nativeRow(incomplete ? t(`${checkLabel} · partial results`, `${checkLabel} · 信息不完整`) : checkLabel,
+          incomplete ? t('Some results could not be loaded. Open Checks for details.', '部分结果尚未获取，点击检查查看详情。') : t('View checks and workflow runs', '查看检查与工作流记录'),
+          { action: 'pr-tab:checks', symbol: failed ? 'xmark.circle' : pending || incomplete ? 'clock' : allSuccessful ? 'checkmark.circle' : 'checklist', tone: checkTone }),
+        nativeRow(reviewsIncomplete ? t(`${reviewLabel} · partial results`, `${reviewLabel} · 信息不完整`) : reviewLabel,
+          reviews.error ? short(reviews.error, 256) : '', { symbol: 'person.crop.circle.badge.checkmark', tone: requested ? 'danger' : reviewsIncomplete ? 'warning' : approvals ? 'success' : 'muted' }),
+        nativeRow(merge.text, t('Review merge options', '查看合并选项'), { action: 'pr-toggle-merge', symbol: merge.symbol, tone: merge.tone }),
+      ]);
+    }
+    function nativeDescription(model, sourceURL = prURL(model), id = 'pr-description') {
+      const labels = (Array.isArray(model.item?.labels) ? model.item.labels : []).map(label => typeof label === 'string' ? label : label?.name).filter(label => typeof label === 'string' && label);
+      const created = date(model.item || {});
+      return node('column', { id, appearance: 'secondary' }, [
+        row([authorButton(model, model.item || {}, sourceURL), ...(created ? [text(t(`opened ${created}`, `创建于 ${created}`))] : []), node('spacer')]),
+        ...(labels.length ? [text(labels.join(' · '))] : []),
+        node('markdown', { text: displayedBody(model.item?.body) }),
+      ]);
+    }
+    function nativeDiscussion(model) {
+      const { sources, activity } = discussionActivity(model);
+      const description = nativeDescription(model);
+      const cards = activity.slice(-80).map(({ source, entry }, index) => {
+        const isEvent = source === 'timeline';
+        const header = row([authorButton(model, entry, prURL(model)),
+          text(isEvent ? `${eventLabel(entry)} · ${date(entry)}` : date(entry)), node('spacer'),
+          ...(source === 'reviews' ? [reviewState(entry.state)] : []),
+          ...(!isEvent ? [open(model, t('View comment on GitHub', '在 GitHub 查看留言'), entry.html_url, '', { appearance: 'icon' })] : []),
+        ]);
+        const children = [header];
+        if (isEvent) {
+          if (entry.commit_id || entry.sha) children.push(text(short(entry.commit_id || entry.sha, 12), 'monospaced'));
+          if (entry.dismissed_review?.dismissal_message) children.push(markdown(entry.dismissed_review.dismissal_message, 2048));
+        } else {
+          if (source === 'reviewComments') children.push(text([entry.path, Number.isInteger(entry.line || entry.original_line) ? t(`line ${entry.line || entry.original_line}`, `第 ${entry.line || entry.original_line} 行`) : '', entry.in_reply_to_id ? t(`Reply to #${entry.in_reply_to_id}`, `回复 #${entry.in_reply_to_id}`) : ''].filter(Boolean).join(' · '), 'monospaced'));
+          if (entry.body) children.push(markdown(entry.body, 6 * 1024));
+          else if (source === 'reviews') children.push(text(t('Review submitted without a message.', '已提交审查，没有附加留言。')));
         }
-        if (value.symbol === 'play.circle') return null;
-        if (value.symbol === 'person.crop.circle.badge.checkmark') {
-          const review = section(model, 'reviews');
-          const incomplete = !review.loaded || review.loading || review.nextPage || review.notice;
-          const label = t(`Reviews ${items(model, 'reviews').length}${incomplete ? '+' : ''}`, `审查 ${items(model, 'reviews').length}${incomplete ? '+' : ''}`);
-          return ['warning', 'danger'].includes(value.tone) ? badge(label, value.tone, value.symbol) : text(label);
-        }
-        return ['warning', 'danger'].includes(value.tone) ? value : text(value.text);
-      }).filter(Boolean);
-      const missing = ['checks', 'statuses', 'workflows'].filter(name => section(model, name).error);
-      if (missing.length && !concise.some(value => value.symbol === 'checklist')) concise.push(badge(t('CI unavailable', 'CI 信息不可用'), 'warning', 'exclamationmark.circle'));
-      return [row([
-        ...(branch ? [text(branch, 'monospaced')] : []),
-        ...(Number.isInteger(item.changed_files) ? [text(t(`${item.changed_files} files`, `${item.changed_files} 个文件`))] : []),
-        ...(Number.isInteger(item.additions) ? [text(`+${item.additions}`, 'monospaced', 'success')] : []),
-        ...(Number.isInteger(item.deletions) ? [text(`−${item.deletions}`, 'monospaced', 'danger')] : []),
-        node('spacer'), ...concise,
-      ])];
+        return node('column', { id: `pr-activity-${index}`, appearance: isEvent ? 'plain' : 'secondary' }, children);
+      });
+      const footer = sources.flatMap(([name, label]) => sectionState(model, name, label));
+      if (activity.length > 80) footer.push(text(t('Showing part of the loaded history. View the full conversation on GitHub.', '这里只显示部分已加载记录，完整讨论可在 GitHub 查看。')));
+      footer.push(nativeReadiness(model), ...nativeCommentComposer(model));
+      return fit(model, [description], cards, footer, '', true);
+    }
+    function nativeCommentComposer(model) {
+      const children = commentActions(model).filter(value => value.type !== 'divider');
+      if (!children.length) return [];
+      return [node('column', { id: 'pr-comment-composer', appearance: 'secondary' }, children)];
+    }
+    function nativeCommits(model) {
+      const list = items(model, 'commits');
+      const cards = list.slice(0, 80).map((commit, index) => {
+        const message = String(commit.commit?.message || ''), lines = message.split('\n');
+        return node('column', { id: `pr-commit-${index}`, appearance: 'plain' }, [
+          open(model, boundedText(lines[0] || t('Commit', '提交'), 512, '…'), commit.html_url, '/commits', { tone: 'neutral' }),
+          row([authorButton(model, commit, prURL(model) + '/commits'), text(date(commit)), node('spacer'), open(model, short(commit.sha, 8), commit.html_url, '/commits')]),
+          ...(lines.length > 1 && lines.slice(1).join('\n').trim() ? [markdown(lines.slice(1).join('\n').trim(), 2048)] : []),
+        ]);
+      });
+      const header = !list.length && section(model, 'commits').loaded && !section(model, 'commits').error
+        ? [text(t('No commits returned.', '暂无提交记录。'))] : [];
+      return fit(model, header, cards, sectionState(model, 'commits', t('Commits', '提交')), '/commits');
     }
     function workflow(model, runs = headItems(model, 'workflows')) {
       const priority = new Set(['in_progress', 'failure', 'error', 'timed_out', 'action_required', 'pending', 'waiting', 'queued', 'requested']);
@@ -723,8 +785,8 @@
       const sources = ['actions', 'checks', 'statuses'], source = sources.includes(model.checksSource) ? model.checksSource : workflows.length ? 'actions' : checks.length ? 'checks' : statuses.length ? 'statuses' : 'actions';
       const counts = { actions: workflows.length, checks: checks.length, statuses: statuses.length };
       const labels = { actions: 'Actions', checks: t('Checks', '检查项'), statuses: t('Statuses', '状态') };
-      const controls = [node('tabBar', { id: 'pr-ci-sources' }, sources.map(name => button(labels[name], `pr-ci:${name}`, { ...(source === name ? { value: 'selected' } : {}), ...(counts[name] ? { subtitle: String(counts[name]) } : {}) }))),
-        text(`${t('Commit', '提交')} ${short(model.headSHA, 8)}`, 'monospaced')];
+      const controls = [node('menu', { id: 'pr-ci-sources', text: labels[source], symbol: source === 'actions' ? 'play.circle' : 'checklist' },
+        sources.map(name => button(`${labels[name]}${counts[name] ? ` · ${counts[name]}` : ''}`, `pr-ci:${name}`, { ...(source === name ? { value: 'selected' } : {}) })))];
       if (source === 'actions') return [nativeActions(model, workflows, controls)];
       const list = source === 'checks' ? checks : statuses, selectedID = source === 'checks' ? model.selectedCheckID : model.selectedStatusID;
       const current = list.find(entry => String(entry.id) === String(selectedID)) || list[0], visible = selectedList(list, current?.id);
@@ -740,7 +802,6 @@
         open(model, t('View on GitHub', '在 GitHub 查看'), current.details_url || current.html_url || current.target_url, '/checks')]
         : [node('emptyState', { text: sourceState.error ? t('Checks unavailable', '无法获取检查信息') : sourceState.loading ? t('Loading checks…', '正在加载检查…') : t('No checks reported', '暂无检查记录'),
           subtitle: sourceState.error ? short(sourceState.error, 512) : t('Reported results for this commit will appear here.', '这个提交的检查结果会显示在这里。'), symbol: sourceState.error ? 'exclamationmark.circle' : 'checklist' })];
-      right.push(text(t('Repository rules determine whether merging is allowed.', '能否合并由仓库规则决定。')));
       return [node('splitView', { id: 'pr-check-workspace', value: model.checksDetailVisible ? 'detail' : 'list', action: 'pr-ci-back', text: labels[source] }, [column(left), column(right)])];
     }
     const fileState = file => {
@@ -763,8 +824,8 @@
         subtitle: state.error ? short(state.error, 512) : t('Select a changed file to review its diff.', '选择变更文件即可查看差异。'), symbol: state.error ? 'exclamationmark.circle' : 'doc.text' }));
       else {
         const result = fileState(selected), path = String(selected.filename || ''), source = typeof selected.patch === 'string' ? selected.patch : '';
-        right.push(row([text(path || t('File', '文件'), 'monospaced', 'neutral'), node('spacer'), badge(result.text, result.tone), ...fileCounts(selected),
-          open(model, t('View file on GitHub', '在 GitHub 查看文件'), selected.blob_url, '/files', { appearance: 'icon' })]));
+        const fileHeader = row([text(path || t('File', '文件'), 'monospaced', 'neutral'), node('spacer'), badge(result.text, result.tone), ...fileCounts(selected),
+          open(model, t('View file on GitHub', '在 GitHub 查看文件'), selected.blob_url, '/files', { appearance: 'icon' })]);
         if (selected.previous_filename) right.push(text(t(`Previously ${selected.previous_filename}`, `原文件名 · ${selected.previous_filename}`), 'monospaced'));
         const safePath = path.length > 0 && bytes(path) <= 4096 && !/[\p{Cc}\p{Cf}\p{Zl}\p{Zp}]/u.test(path);
         if (!safePath) right.push(node('emptyState', { text: t('Preview unavailable', '无法预览'), subtitle: t('This file name cannot be shown in the native diff viewer. View the file on GitHub.', '此文件名无法在原生差异视图中显示，请在 GitHub 查看。'), symbol: 'doc.text' }));
@@ -786,22 +847,23 @@
           if (Number.isInteger(selected.additions) && additions < selected.additions || Number.isInteger(selected.deletions) && deletions < selected.deletions) {
             right.push(text(t('GitHub returned only part of this file’s diff. View the complete change on GitHub.', 'GitHub 仅返回了此文件的部分差异，完整变更请在 GitHub 查看。'), 'caption', 'warning'));
           }
-          if (patch) right.push(node('diff', { id: `pr-file-diff-${list.indexOf(selected)}`, text: patch, subtitle: path, value: 'unified' }));
+          if (patch) right.push(fileHeader, node('diff', { id: `pr-file-diff-${list.indexOf(selected)}`, text: patch, subtitle: path, value: 'unified' }));
           else right.push(node('emptyState', { text: t('Diff exceeds the preview limit', '差异超出预览范围'), subtitle: t('A complete diff line exceeds 64 KiB. View this file on GitHub.', '一行差异已超过 64 KiB，请在 GitHub 查看此文件。'), symbol: 'doc.text' }));
         }
+        if (!right.some(value => value.type === 'diff')) right.unshift(fileHeader);
       }
       return [node('splitView', { id: 'pr-file-workspace', value: model.filesDetailVisible ? 'detail' : 'list', action: 'pr-files-back', text: t('Files', '文件') }, [column(left), column(right)])];
     }
     function nativeContent(model) {
       let body;
       if (model.tab === 'checks') body = nativeChecks(model);
-      else if (model.tab === 'commits') body = commitsView(model);
+      else if (model.tab === 'commits') body = nativeCommits(model);
       else if (model.tab === 'files') body = supportsNativeDiff ? nativeFiles(model) : filesView(model);
-      else body = [...discussion(model), ...commentActions(model)];
-      if (model.mergeExpanded || model.merge?.pending) body.unshift(column([...mergeActions(model), node('divider')]));
+      else body = nativeDiscussion(model);
+      if (model.mergeExpanded || model.merge?.pending) body.unshift(node('column', { id: 'pr-merge-options', appearance: 'secondary' }, mergeActions(model)));
       return body;
     }
-    return { summary, content, actions, tabs, nativeSummary, nativeContent, workflow, supportsNativeLayout };
+    return { summary, content, actions, tabs, nativeSummary, nativeContent, nativeDescription, workflow, supportsNativeLayout };
   }
   const panelID = 'com.nora.github.panel';
   const clientID = 'Iv23liPZy7EARoSnYoYy';
@@ -1369,24 +1431,28 @@
   function connectionView() {
     const children = state.error ? [node('badge', { text: state.error, tone: 'danger' })] : [];
     if (state.device) {
-      children.push(styledText(state.device.userCode, 'monospaced', 'neutral'),
-        button(t('Open GitHub', '打开 GitHub'), 'open-login', false, { appearance: 'primary', symbol: 'arrow.up.forward.square' }),
-        button(t('Finish sign-in', '完成登录'), 'finish-login', false, { appearance: 'secondary' }),
+      children.push(node('column', { id: 'github-device-code', appearance: 'secondary' }, [
+        styledText(t('Your verification code', '你的验证码')),
+        styledText(state.device.userCode, 'monospaced', 'neutral'),
+      ]), row([button(t('Open GitHub', '打开 GitHub'), 'open-login', false, { appearance: 'secondary', symbol: 'arrow.up.forward.square' }),
+        button(t('Finish sign-in', '完成登录'), 'finish-login', false, { appearance: 'primary' })]),
         styledText(t('Confirm in your browser, then choose Finish sign-in.', '在浏览器确认授权后，点击“完成登录”。')),
-        button(t('Cancel', '取消'), 'cancel-login'));
+        button(t('Cancel', '取消'), 'cancel-login', false, { appearance: 'plain' }));
     } else {
-      children.push(button(message.signIn, 'begin-login', false, { appearance: 'primary', symbol: 'person.crop.circle' }),
-        button(state.showToken ? t('Hide access token', '收起访问 token') : t('Use an access token', '使用访问 token'), 'toggle-token'));
+      children.push(button(message.signIn, 'begin-login', false, { appearance: 'primary', symbol: 'person.crop.circle' }));
       if (state.error) children.push(button(t('Try again', '重试'), 'retry-load'));
-      if (state.showToken) children.push(node('secureField', { id: 'token', placeholder: t('GitHub access token', 'GitHub 访问 token') }),
-        button(t('Connect with token', '使用 token 连接'), 'connect-token', false, { appearance: 'secondary' }));
-      children.push(menu(t('Repository access', '仓库访问权限'), [button(message.manage, 'manage')], 'folder.badge.gearshape'),
+      children.push(button(state.showToken ? t('Hide access token', '收起访问 token') : t('Use an access token', '使用访问 token'), 'toggle-token', false, { appearance: 'plain' }));
+      if (state.showToken) children.push(node('column', { id: 'github-token-form', appearance: 'secondary' }, [
+        node('secureField', { id: 'token', placeholder: t('GitHub access token', 'GitHub 访问 token') }),
+        button(t('Connect with token', '使用 token 连接'), 'connect-token', false, { appearance: 'secondary' }),
+      ]));
+      children.push(button(message.manage, 'manage', false, { appearance: 'plain', symbol: 'folder.badge.gearshape' }),
         styledText(t('Credentials stay in your Mac’s Keychain.', '账号凭据保存在你电脑的 Keychain 中。')));
     }
     return node('emptyState', { id: 'connection', text: state.device ? t('Finish connecting GitHub', '完成 GitHub 连接') : message.connect,
       subtitle: state.device ? t('Enter this code on GitHub to authorize your account.', '在 GitHub 输入验证码，为你自己的账号授权。')
         : t('Connect your own account to browse repositories, Issues, and pull requests.', '连接你自己的账号，查看仓库、Issues 和 PR。'),
-      symbol: 'chevron.left.forwardslash.chevron.right' }, children);
+      symbol: 'person.crop.circle' }, children);
   }
   function accountMenu() {
     const children = [button(t('Open another repository…', '打开其他仓库…'), 'show-other-repo', false, { symbol: 'plus' }),
@@ -1416,9 +1482,9 @@
       node('sidebar', { id: 'view-navigation', value: `view-${state.kind}`, items: [
         node('navigationItem', { id: 'view-issues', text: 'Issues', symbol: 'circle.circle', action: 'kind:issues' }),
         node('navigationItem', { id: 'view-pulls', text: t('Pull requests', 'PR'), symbol: 'arrow.triangle.pull', action: 'kind:pulls' })
-      ] }), node('textField', { id: 'query', action: 'query',
+      ] }), node('column', { id: 'github-feed-controls', appearance: 'plain' }, [node('textField', { id: 'query', action: 'query',
         placeholder: t('Search loaded items', '搜索已加载条目'), value: state.query, symbol: 'magnifyingglass' }),
-      row([repositoryPicker(), filterMenu()])];
+        row([repositoryPicker(), filterMenu()])])];
     const reachedLimit = totalItems >= maximumSidebarItems || totalItems > visibleItems.length;
     const hasLocalFilters = !!(state.query.trim() || state.author || state.label);
     if (reachedLimit) children.push(styledText(t(
@@ -1466,21 +1532,22 @@
   }
   function detailView() {
     const item = state.selected, status = itemStatus(item), date = itemDate(item);
-    if (state.kind === 'pulls' && pullDetails.current && pullView.supportsNativeLayout) {
-      const model = pullDetails.current;
-      const toolbar = node('toolbar', {}, [styledText(`${itemRepository(item)} / PR #${item.number}`, 'caption'), node('badge', status), node('spacer'),
+    if (pullView.supportsNativeLayout && (state.kind === 'issues' || pullDetails.current)) {
+      const isPR = state.kind === 'pulls', model = isPR ? pullDetails.current : { item, repo: itemRepository(item), number: item.number };
+      const toolbar = node('toolbar', {}, [styledText(`${itemRepository(item)} / ${isPR ? 'PR' : 'Issue'} #${item.number}`, 'caption'), node('badge', status), node('spacer'),
         button(t('Hand to Nora', '交给 Nora'), 'handoff-item', state.detailLoading || !!state.detailError, { appearance: 'primary', symbol: 'sparkles' }),
-        button(t('Merge…', '合并…'), 'pr-toggle-merge', !!model.merge?.busy, { appearance: 'plain', symbol: 'arrow.triangle.merge', value: model.mergeExpanded || model.merge?.pending ? 'selected' : '' }),
+        ...(isPR ? [button(t('Merge…', '合并…'), 'pr-toggle-merge', !!model.merge?.busy, { appearance: 'plain', symbol: 'arrow.triangle.merge', value: model.mergeExpanded || model.merge?.pending ? 'selected' : '' })] : []),
         button(message.refresh, 'refresh-detail', state.detailLoading, { appearance: 'icon', symbol: 'arrow.clockwise' }),
         button(t('View on GitHub', '在 GitHub 查看'), 'open-item', false, { appearance: 'icon', symbol: 'arrow.up.forward.square' }),
         button(t('Close details', '关闭详情'), 'close-detail', false, { appearance: 'icon', symbol: 'xmark' })]);
       const summary = column([styledText(boundedText(String(item.title || ''), 8192, '…'), 'title', 'neutral'),
-        row([styledText([short(item.user?.login || t('Unknown author', '未知作者'), 64), date].filter(Boolean).join(' · ')),
-          ...(itemLabels(item).length ? [styledText(boundedText(itemLabels(item).join(' · '), 512, '…'))] : [])]), ...pullView.nativeSummary(model)]);
+        ...(isPR ? pullView.nativeSummary(model) : [])]);
       const body = state.detailLoading ? [node('progress', { text: t('Loading details…', '正在加载详情…') })]
         : state.detailError ? [node('badge', { text: short(state.detailError, 512), tone: 'danger' }), button(t('Retry details', '重试详情'), 'retry-detail')]
-          : pullView.nativeContent(model);
-      return node('detail', { id: 'item-details' }, [toolbar, summary, pullView.tabs(model), ...body]);
+          : isPR ? pullView.nativeContent(model) : [pullView.nativeDescription(model, item.html_url, 'issue-description'),
+            button(t('View discussion on GitHub', '在 GitHub 查看讨论'), 'open-item', false, { appearance: 'plain', symbol: 'text.bubble' })];
+      const tabs = isPR ? pullView.tabs(model) : node('tabBar', { id: 'issue-tabs' }, [node('button', { id: 'issue-tab-description', text: t('Overview', '概览'), value: 'selected' })]);
+      return node('detail', { id: 'item-details' }, [toolbar, summary, tabs, ...body]);
     }
     const children = [
       node('toolbar', {}, [styledText(`${itemRepository(item)} · ${state.kind === 'pulls' ? 'PR' : 'Issue'} #${item.number}`, 'monospaced'),
@@ -1510,7 +1577,8 @@
       [button(state.error === message.expired ? t('Reconnect GitHub', '重新连接 GitHub') : t('Try again', '重试'),
         state.error === message.expired ? 'begin-login' : 'retry-load', false, { appearance: 'primary' }), button(message.manage, 'manage')]);
     if (filteredItems().length) return node('emptyState', { text: state.kind === 'pulls' ? t('Select a pull request', '选择一条 PR') : t('Select an Issue', '选择一条 Issue'),
-      subtitle: t('Choose an item in the sidebar to read its details or hand it to Nora.', '从侧边栏选择条目，查看详情或交给 Nora 处理。'), symbol: state.kind === 'pulls' ? 'arrow.triangle.pull' : 'circle.circle' });
+      subtitle: state.kind === 'pulls' ? t('Read the conversation, review changes, and hand the work to Nora.', '查看讨论与变更，把需要处理的工作交给 Nora。')
+        : t('Read the description and hand the work to Nora.', '查看问题描述，把需要处理的工作交给 Nora。'), symbol: state.kind === 'pulls' ? 'arrow.triangle.pull' : 'circle.circle' });
     if (state.moreItems && !(state.query.trim() || state.author || state.label)) return node('emptyState', { text: t('No matching items on the loaded pages', '已加载页面暂无匹配条目'),
       subtitle: t('Scroll down in the sidebar to load more items.', '在侧边栏下拉可继续加载条目。'), symbol: 'tray' });
     const filtered = state.query || state.author || state.label;
@@ -1524,16 +1592,18 @@
     if (!state.user) return connectionView();
     const items = filteredItems();
     let visibleItems = items.slice(0, maximumSidebarItems);
-    const header = node('toolbar', {}, [column([styledText(state.repo || t('All repositories', '所有仓库'), 'caption'),
-      styledText(state.kind === 'pulls' ? t('Pull requests', 'PR') : 'Issues', 'headline', 'neutral')]), node('spacer'),
+    const header = node('toolbar', {}, [styledText(`${state.repo || t('All repositories', '所有仓库')} / ${state.kind === 'pulls' ? t('Pull requests', 'PR') : 'Issues'}`, 'caption', 'neutral'), node('spacer'),
       button(message.refresh, 'refresh', state.itemsLoading || state.reposLoading, { appearance: 'icon', symbol: 'arrow.clockwise' })]);
     let main;
     if (state.showOtherRepository) {
       main = column([header, node('emptyState', { id: 'other-repository', text: t('Open another repository', '打开其他仓库'),
         subtitle: t('Enter owner/name. Your connected account must have access.', '输入 owner/name；已连接的账号需要拥有访问权限。'), symbol: 'folder.badge.plus' }, [
         ...(state.error ? [node('badge', { text: state.error, tone: 'danger' })] : []),
-        node('textField', { id: 'manual-repo', placeholder: 'owner/name', value: state.manualRepository }),
-        row([button(t('Cancel', '取消'), 'cancel-other-repo'), button(t('Open repository', '打开仓库'), 'open-repo', false, { appearance: 'primary' })])
+        node('column', { id: 'github-repository-form', appearance: 'secondary' }, [
+          node('textField', { id: 'manual-repo', placeholder: 'owner/name', value: state.manualRepository }),
+          row([button(t('Cancel', '取消'), 'cancel-other-repo', false, { appearance: 'plain' }), node('spacer'),
+            button(t('Open repository', '打开仓库'), 'open-repo', false, { appearance: 'primary' })]),
+        ]),
       ])]);
     } else {
       main = state.selected && state.detailsVisible ? detailView() : column([header, emptyListView()]);
@@ -1576,6 +1646,7 @@
     }
   });
   const pullView = createPullRequestView({ node, t, boundedText, displayedBody, short, itemStatus, itemDate,
+    avatarFor: login => login === state.user?.login ? state.avatarBase64 : ownerAvatars.get(login)?.base64,
     supportsTextEditor: typeof nora.ui.textEditor === 'function', supportsNativeDiff: typeof nora.ui.diff === 'function',
     supportsNativeLayout: ['detail', 'tabBar', 'splitView', 'itemRow'].every(kind => typeof nora.ui[kind] === 'function') });
   nora.registerPanel(panelID, async (event = {}) => {

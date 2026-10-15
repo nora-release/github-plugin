@@ -695,7 +695,10 @@ test('A selected PR has one detail header and a complete Markdown description be
   const title = nodes(detail).find(node => node.textStyle === 'title');
   assert.equal(title.text, 'Keep the editor selection when switching pages');
   assert.ok(!nodes(detail.children[0]).includes(title));
-  assert.match(texts(detail), /bob · Oct 10\nnative · reviewed/);
+  const description = nodes(detail).find(node => node.id === 'pr-description');
+  assert.equal(description.appearance, 'secondary');
+  assert.match(texts(description), /bob\nopened Oct 10\nnative · reviewed/);
+  assert.ok(!nodes(detail.children[1]).some(node => node.text === 'bob'), 'The fixed heading must not repeat the description author');
   assert.equal(nodes(detail).find(node => node.type === 'markdown').text, '## Changes\nPreserve the selection.\n\n- Keep keyboard focus.');
   assert.ok(nodes(detail).some(node => node.action === 'handoff-item' && node.appearance === 'primary'));
   assert.equal(f.drafts.length, 0);
@@ -733,7 +736,7 @@ test('Sidebar rows stay compact while the full detail keeps every review label',
   const detailLabels = nodes(detail).find(node => node.text === labels.map(label => label.name).join(' · '));
   assert.ok(detailLabels);
   assert.equal(detailLabels.textStyle, 'caption');
-  assert.match(texts(detail), /a-long-repository-author · Oct 10/);
+  assert.match(texts(detail), /a-long-repository-author\nopened Oct 10/);
   assert.equal(f.requests.length, requestCount + 1);
   assert.equal(new URL(f.requests.at(-1).url).pathname, '/repos/alice/project/issues/7');
   assert.equal(f.drafts.length, 0);
