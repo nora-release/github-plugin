@@ -667,7 +667,8 @@
       }
       const approvals = [...latestReviews.values()].filter(value => value === 'APPROVED').length, requested = [...latestReviews.values()].filter(value => value === 'CHANGES_REQUESTED').length;
       const reviews = section(model, 'reviews'), reviewsIncomplete = !reviews.loaded || reviews.loading || reviews.error || reviews.nextPage || reviews.notice;
-      const reviewLabel = requested ? t('Changes requested', '有审查要求修改') : approvals ? t(`${approvals} ${approvals === 1 ? 'approval' : 'approvals'}`, `${approvals} 人批准`) : t('No reviews yet', '暂无审查');
+      const reviewLabel = requested ? t('Changes requested', '有审查要求修改') : approvals ? t(`${approvals} ${approvals === 1 ? 'approval' : 'approvals'}`, `${approvals} 人批准`)
+        : items(model, 'reviews').length ? t('Awaiting approval', '尚未批准') : t('No reviews yet', '暂无审查');
       const merge = mergeState(model.item || {});
       return node('column', { id: 'pr-readiness', appearance: 'secondary' }, [
         nativeRow(incomplete ? t(`${checkLabel} · partial results`, `${checkLabel} · 信息不完整`) : checkLabel,

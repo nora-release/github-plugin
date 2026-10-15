@@ -280,6 +280,27 @@ test('Native incomplete or unknown results cannot show a successful readiness in
   assert.match(indicator.text, /pending/);
 });
 
+test('Existing commented or dismissed reviews show awaiting approval instead of no reviews', () => {
+  const current = model(); current.tab = 'discussion';
+  const api = view('en', { supportsNativeLayout: true });
+  const review = () => flatten(api.nativeContent(current)).find(value => value.type === 'itemRow' && value.symbol === 'person.crop.circle.badge.checkmark');
+  assert.equal(review().text, 'No reviews yet');
+  for (const state of ['COMMENTED', 'DISMISSED']) {
+    current.sections.reviews = section([{ id: 1, state, user: { login: 'reviewer' }, submitted_at: '2026-10-15T00:00:00Z' }]);
+    assert.equal(review().text, 'Awaiting approval');
+    assert.equal(review().tone, 'muted');
+    const chinese = flatten(view('zh', { supportsNativeLayout: true }).nativeContent(current));
+    assert.ok(chinese.some(value => value.type === 'itemRow' && value.text === '尚未批准'));
+    assert.ok(!chinese.some(value => value.text === '暂无审查'));
+  }
+  current.sections.reviews = section([
+    { id: 1, state: 'APPROVED', user: { login: 'reviewer' }, submitted_at: '2026-10-14T00:00:00Z' },
+    { id: 2, state: 'DISMISSED', user: { login: 'reviewer' }, submitted_at: '2026-10-15T00:00:00Z' },
+  ]);
+  assert.equal(review().text, 'Awaiting approval');
+  assert.equal(review().tone, 'muted');
+});
+
 test('Native commits lead with the message and preserve author, SHA and extended body', () => {
   const current = model(); current.tab = 'commits';
   current.sections.commits = section([{ sha: headSHA, html_url: `https://github.com/owner/repo/commit/${headSHA}`, author: { login: 'author' },
