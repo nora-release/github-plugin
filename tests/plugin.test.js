@@ -739,14 +739,14 @@ test('Sidebar rows stay compact while the full detail keeps every review label',
   assert.equal(item.text, 'Keep all review labels');
   assert.match(item.subtitle, /#7.*alice\/project/);
   assert.ok(!nodes(initial.children[1]).some(node => node.type === 'markdown'));
-  const requestCount = f.requests.length;
+  const requestCount = apiRequests(f).length;
   const detail = (await f.render({ action: item.action })).children[1];
   const detailLabels = nodes(detail).find(node => node.text === labels.map(label => label.name).join(' · '));
   assert.ok(detailLabels);
   assert.equal(detailLabels.textStyle, 'caption');
   assert.match(texts(detail), /a-long-repository-author\nopened Oct 10/);
-  assert.equal(f.requests.length, requestCount + 1);
-  assert.equal(new URL(f.requests.at(-1).url).pathname, '/repos/alice/project/issues/7');
+  assert.equal(apiRequests(f).length, requestCount + 1);
+  assert.equal(new URL(apiRequests(f).at(-1).url).pathname, '/repos/alice/project/issues/7');
   assert.equal(f.drafts.length, 0);
 });
 

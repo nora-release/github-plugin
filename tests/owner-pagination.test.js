@@ -80,16 +80,16 @@ test('Repeated owners use one public download across filtering, refresh and Issu
   assert.equal(f.requests.filter(request => request.responseEncoding === 'base64').length, 1);
 });
 
-test('Malformed oversized and unavailable owner images keep work items readable without repeated requests', async () => {
+test('Malformed oversized and unavailable owner images stay cached until an explicit refresh', async () => {
   for (const result of [{ status: 404 }, avatar('bad base64'), avatar(image, 'text/html'), avatar(Buffer.alloc(8 * 1024 + 1).toString('base64'))]) {
     const f = fixture({ saved: connection, ownerAvatarRoute: async () => result, route: async url => basics(url) || body([feedItem('team/project', 1)]) });
     for (const event of [{}, { action: 'refresh' }]) {
-      const view = await f.renderReady(event);
+      const view = await renderWithAvatars(f, event);
       assert.equal(view.children[0].items.length, 1);
       assert.equal(view.children[0].items[0].avatarBase64, undefined);
       assert.doesNotMatch(texts(view), /invalid response|could not be reached/);
     }
-    assert.equal(f.requests.filter(request => request.responseEncoding === 'base64').length, 1);
+    assert.equal(f.requests.filter(request => request.responseEncoding === 'base64').length, 2);
   }
 });
 

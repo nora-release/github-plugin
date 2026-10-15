@@ -81,7 +81,7 @@ test('Selecting a cross-repository Issue reads its repository detail and keeps s
   const view = await f.render({ action: `item:${key('team/second', 7)}` });
   assert.match(texts(view), /Fetched issue description/);
   assert.equal(view.value, key('team/second', 7));
-  assert.equal(new URL(f.requests.at(-1).url).pathname, '/repos/team/second/issues/7');
+  assert.equal(new URL(apiRequests(f).at(-1).url).pathname, '/repos/team/second/issues/7');
 });
 
 test('Selecting a PR uses the pulls detail API even though the feed item used the issue REST ID', async () => {

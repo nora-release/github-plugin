@@ -272,7 +272,7 @@
     }
     return { get current() { return model; }, reset() { ++revision; model = null; }, open, selectTab, refresh, more, jobs, setCommentDraft, postComment, prepareMerge, confirmMerge, cancelMerge, context };
   }
-  function createPullRequestView({ node, t, boundedText, displayedBody, short, itemStatus, itemDate, avatarFor = () => null, supportsTextEditor = true, supportsNativeLayout = false, supportsNativeDiff = false }) {
+  function createPullRequestView({ node, t, boundedText, displayedBody, short, itemStatus, itemDate, avatarFor = () => null, onAuthorButton = () => {}, supportsTextEditor = true, supportsNativeLayout = false, supportsNativeDiff = false }) {
     const text = (value, textStyle = 'caption', tone = 'muted') => node('text', { text: boundedText(String(value ?? ''), 4096, '…'), textStyle, tone });
     const column = children => node('column', {}, children);
     const row = children => node('row', {}, children);
@@ -289,11 +289,24 @@
     };
     const open = (model, label, url, suffix = '', properties = {}) => button(label, openAction(url, prURL(model) + suffix), { symbol: 'arrow.up.forward.square', ...properties });
     const date = entry => itemDate({ updated_at: entry.submitted_at || entry.created_at || entry.completed_at || entry.started_at || entry.updated_at || entry.commit?.author?.date });
-    const account = entry => entry.user || entry.actor || entry.author || {};
-    const authorLabel = entry => short(account(entry).login || entry.commit?.author?.name || t('GitHub', 'GitHub'), 80);
-    const authorButton = (model, entry, fallback, label = authorLabel(entry)) => {
-      const author = account(entry), avatar = entry.avatarBase64 || author.avatarBase64 || avatarFor(author.login);
-      return button(label, openAction(author.html_url, fallback), { tone: 'neutral', ...(avatar ? { avatarBase64: avatar } : { symbol: 'person.crop.circle' }) });
+    const account = (entry, model) => {
+      if (entry.event === 'committed') {
+        if (typeof entry.author?.login === 'string' && entry.author.login) return entry.author;
+        const commit = /^[a-f\d]{40}$/i.test(entry.sha || '') ? items(model, 'commits').find(value => value.sha?.toLowerCase() === entry.sha.toLowerCase()) : null;
+        if (typeof commit?.author?.login === 'string' && commit.author.login) return commit.author;
+        return entry.author && typeof entry.author === 'object' ? entry.author : {};
+      }
+      const candidates = [entry.user, entry.actor, entry.author];
+      const author = candidates.find(value => typeof value?.login === 'string' && value.login);
+      if (author) return author;
+      return candidates.find(value => value && typeof value === 'object') || {};
+    };
+    const authorButton = (model, entry, fallback) => {
+      const author = account(entry, model), avatar = avatarFor(author);
+      const label = short(author.login || author.name || entry.commit?.author?.name || t('Unknown author', '未知作者'), 80);
+      const result = button(label, openAction(author.html_url, fallback), { tone: 'neutral', ...(avatar ? { avatarBase64: avatar } : { symbol: 'person.crop.circle' }) });
+      onAuthorButton(result, author, entry);
+      return result;
     };
     const markdown = (value, maximum = 8 * 1024) => node('markdown', { text: boundedText(String(value || ''), maximum, '\n\n' + t('Content shortened. View on GitHub for the full text.', '内容已缩短，完整内容可在 GitHub 查看。')) });
     const code = (value, language = '') => {
@@ -308,7 +321,11 @@
       return result;
     };
     const encodedSize = value => {
-      const normalize = entry => ({ ...entry, options: entry.options || [], disabled: entry.disabled || false, children: (entry.children || []).map(normalize), items: (entry.items || []).map(normalize) });
+      const normalize = entry => {
+        const { avatarBase64, ...withoutAvatar } = entry;
+        return { ...(entry.type === 'button' ? withoutAvatar : entry), options: entry.options || [], disabled: entry.disabled || false,
+          children: (entry.children || []).map(normalize), items: (entry.items || []).map(normalize) };
+      };
       return bytes(JSON.stringify(value.map(normalize)).replace(/\//g, '\\/'));
     };
     const fit = (model, header, cards, footer, suffix, preferRecent = false) => {
@@ -896,7 +913,11 @@
     invalid: t('GitHub returned an invalid response. Try again.', 'GitHub 返回了无效结果，请重试。'),
   };
   const state = { user: null, avatarBase64: null, avatarAccount: '', avatarURL: '', repos: [], repo: '', repoQuery: '', items: [], kind: 'issues', status: 'open', query: '', author: '', label: '', page: 1, repoPage: 1, moreItems: false, moreRepos: false, selected: null, detailsVisible: false, detailLoading: false, detailError: '', device: null, error: '', itemLoadError: '', itemRetryAppend: false, restored: false, showToken: false, showOtherRepository: false, manualRepository: '', itemsLoading: false, reposLoading: false };
-  const ownerAvatars = new Map();
+  const avatars = new Map();
+  let participantButtons = new WeakMap();
+  let visibleParticipants = new Map();
+  let visibleParticipantPage = '';
+  let participantCommitsOperation = null;
   const ownerAvatarWaiters = [];
   let activeOwnerAvatars = 0;
   const maximumSidebarItems = 400;
@@ -1221,8 +1242,8 @@
             typeof response.bodyBase64 !== 'string' || !response.bodyBase64) return;
         const validated = node('menu', { text: user.login, avatarBase64: response.bodyBase64 });
         state.avatarBase64 = validated.avatarBase64 || null;
-        const owner = ownerAvatars.get(user.login.toLowerCase());
-        if (owner?.url === url) owner.base64 = state.avatarBase64;
+        const owner = avatars.get(avatarKey({ owner: user.login.toLowerCase(), url }));
+        if (owner) owner.base64 = state.avatarBase64;
         invalidatePanel(current, user);
       } catch {
         // Account navigation remains usable when the optional public avatar is unavailable.
@@ -1258,58 +1279,96 @@
       else activeOwnerAvatars--;
     }
   }
-  async function loadOwnerAvatars() {
+  const avatarKey = source => `${source.owner}|${source.url}`;
+  const cachedAvatar = source => avatars.get(avatarKey(source));
+  function participantSource(account) {
+    const login = account?.login;
+    if (typeof login !== 'string' || !/^[a-z\d][a-z\d-]{0,38}(?:\[bot\])?$/i.test(login)) return null;
+    const owner = login.toLowerCase(), suppliedURL = avatarURL(account.avatar_url);
+    const currentAccount = state.user?.login.toLowerCase() === owner;
+    const known = [...avatars.values()].filter(entry => entry.owner === owner);
+    const existing = known.find(entry => entry.base64) || known[0];
+    const url = suppliedURL || (currentAccount && state.avatarURL) || existing?.url || `https://avatars.githubusercontent.com/${encodeURIComponent(login)}?s=64`;
+    return { owner, url, accountAvatar: currentAccount && url === state.avatarURL };
+  }
+  function participantPage() {
+    if (!state.user || !state.selected || !state.detailsVisible || state.detailLoading || state.detailError || state.showOtherRepository) return '';
+    return `${generation}:${detailRevision}:${state.kind}:${itemKey(state.selected)}:${state.kind === 'pulls' ? pullDetails.current?.tab || '' : ''}`;
+  }
+  function avatarIsVisible(source) {
+    if (visibleParticipantPage && visibleParticipantPage === participantPage() && visibleParticipants.has(avatarKey(source))) return true;
+    const item = filteredItems().slice(0, maximumSidebarItems).find(value => itemRepository(value).split('/')[0].toLowerCase() === source.owner);
+    return !!item && ownerAvatarSource(item).url === source.url;
+  }
+  async function loadSmallAvatar(source) {
     const current = generation, user = state.user;
     if (!user) return;
+    const key = avatarKey(source), cached = avatars.get(key);
+    if (cached) return cached.promise;
+    if (avatars.size >= 512) {
+      for (const [candidate, entry] of avatars) {
+        if (!entry.promise) { avatars.delete(candidate); break; }
+      }
+      if (avatars.size >= 512) return;
+    }
+    const entry = { owner: source.owner, url: source.url, base64: null, promise: null };
+    avatars.set(key, entry);
+    if (source.accountAvatar) { entry.base64 = state.avatarBase64; return; }
+    entry.promise = withOwnerAvatarSlot(async () => {
+      try {
+        if (current !== generation || state.user !== user || avatars.get(key) !== entry) return;
+        if (!avatarIsVisible(source)) { avatars.delete(key); return; }
+        const response = await http(source.url, { headers: { Accept: 'image/png,image/jpeg' }, responseEncoding: 'base64',
+          maximumResponseBytes: 8 * 1024, timeoutSeconds: 3 });
+        if (current !== generation || state.user !== user || avatars.get(key) !== entry) return;
+        const contentType = Object.entries(response.headers || {}).find(([name]) => name.toLowerCase() === 'content-type')?.[1];
+        if (response.status !== 200 || typeof contentType !== 'string' || !['image/png', 'image/jpeg'].includes(contentType.split(';')[0].trim().toLowerCase()) ||
+            typeof response.bodyBase64 !== 'string' || !response.bodyBase64 || response.bodyBase64.length > Math.ceil(8 * 1024 / 3) * 4) return;
+        const validated = node('navigationItem', { avatarBase64: response.bodyBase64 });
+        const padding = response.bodyBase64.endsWith('==') ? 2 : response.bodyBase64.endsWith('=') ? 1 : 0;
+        if (response.bodyBase64.length / 4 * 3 - padding > 8 * 1024) return;
+        entry.base64 = validated.avatarBase64 || null;
+        if (avatarIsVisible(source)) invalidatePanel(current, user);
+      } catch {
+        // Optional images cannot block work items; failures are cached until the source changes or the account is reset.
+      } finally { entry.promise = null; }
+    });
+    return entry.promise;
+  }
+  async function loadAvatarSources(sources, isCurrent = () => true) {
+    const current = generation, user = state.user;
+    let index = 0;
+    await Promise.all(Array.from({ length: Math.min(4, sources.length) }, async () => {
+      while (index < sources.length && current === generation && state.user === user && isCurrent()) await loadSmallAvatar(sources[index++]);
+    }));
+  }
+  async function loadOwnerAvatars() {
+    if (!state.user) return;
     const sources = [...new Map(filteredItems().slice(0, maximumSidebarItems).map(item => {
       const source = ownerAvatarSource(item);
       return [source.owner, source];
-    })).values()].filter(source => ownerAvatars.get(source.owner)?.url !== source.url || ownerAvatars.get(source.owner)?.promise).slice(0, 16);
-    const load = async source => {
-      if (current !== generation || state.user !== user) return;
-      const cached = ownerAvatars.get(source.owner);
-      if (cached?.url === source.url) return cached.promise;
-      if (ownerAvatars.size >= 512) {
-        for (const [owner, entry] of ownerAvatars) {
-          if (!entry.promise) { ownerAvatars.delete(owner); break; }
-        }
-      }
-      const entry = { url: source.url, base64: null, promise: null };
-      ownerAvatars.set(source.owner, entry);
-      if (source.accountAvatar) { entry.base64 = state.avatarBase64; return; }
-      entry.promise = withOwnerAvatarSlot(async () => {
-        try {
-          if (current !== generation || state.user !== user || ownerAvatars.get(source.owner) !== entry) return;
-          const response = await http(source.url, { headers: { Accept: 'image/png,image/jpeg' }, responseEncoding: 'base64',
-            maximumResponseBytes: 8 * 1024, timeoutSeconds: 3 });
-          if (current !== generation || state.user !== user || ownerAvatars.get(source.owner) !== entry) return;
-          const contentType = Object.entries(response.headers || {}).find(([key]) => key.toLowerCase() === 'content-type')?.[1];
-          if (response.status !== 200 || typeof contentType !== 'string' || !['image/png', 'image/jpeg'].includes(contentType.split(';')[0].trim().toLowerCase()) ||
-              typeof response.bodyBase64 !== 'string' || !response.bodyBase64 || response.bodyBase64.length > Math.ceil(8 * 1024 / 3) * 4) return;
-          const validated = node('navigationItem', { avatarBase64: response.bodyBase64 });
-          const padding = response.bodyBase64.endsWith('==') ? 2 : response.bodyBase64.endsWith('=') ? 1 : 0;
-          if (response.bodyBase64.length / 4 * 3 - padding > 8 * 1024) return;
-          entry.base64 = validated.avatarBase64 || null;
-          invalidatePanel(current, user);
-        } catch {
-          // Optional owner images must never prevent reading or paging GitHub work items.
-        } finally {
-          entry.promise = null;
-        }
-      });
-      return entry.promise;
-    };
-    let index = 0;
-    await Promise.all(Array.from({ length: Math.min(4, sources.length) }, async () => {
-      while (index < sources.length && current === generation && state.user === user) await load(sources[index++]);
-    }));
+    })).values()].filter(source => !cachedAvatar(source) || cachedAvatar(source).promise).slice(0, 16);
+    await loadAvatarSources(sources);
+  }
+  async function loadParticipantAvatars() {
+    const page = visibleParticipantPage;
+    if (!page || page !== participantPage()) return;
+    await loadAvatarSources([...visibleParticipants.values()].slice(0, 64), () => page === participantPage());
+  }
+  function retryFailedAvatars() {
+    for (const [key, entry] of avatars) if (!entry.base64 && !entry.promise) avatars.delete(key);
+    if (state.user && !state.avatarBase64 && !avatarOperation) {
+      state.avatarAccount = '';
+      void loadAvatar();
+    }
   }
   function clearAccount() {
     state.user = null; state.repos = []; state.repo = ''; state.items = []; state.selected = null; state.device = null;
     state.avatarBase64 = null; state.avatarAccount = ''; state.avatarURL = ''; avatarOperation = null;
     panelInvalidation = null;
     restoreOperation = null;
-    ownerAvatars.clear(); state.itemLoadError = ''; state.itemRetryAppend = false;
+    avatars.clear(); visibleParticipants.clear(); visibleParticipantPage = ''; participantButtons = new WeakMap(); participantCommitsOperation = null;
+    state.itemLoadError = ''; state.itemRetryAppend = false;
     state.moreItems = false; state.moreRepos = false;
     state.page = 1; state.repoPage = 1; state.query = ''; state.repoQuery = ''; state.author = ''; state.label = ''; state.kind = 'issues'; state.status = 'open';
     clearDetails(); state.showToken = false; state.showOtherRepository = false;
@@ -1555,7 +1614,7 @@
         ? { loadMoreAction: 'more-items', loadMoreToken: feedToken() } : {}),
       items: visibleItems.map((item, index) => {
         const itemState = itemStatus(item), key = itemKey(item);
-        const avatar = index < avatarCount ? ownerAvatars.get(ownerAvatarSource(item).owner)?.base64 : null;
+        const avatar = index < avatarCount ? cachedAvatar(ownerAvatarSource(item))?.base64 : null;
         return node('navigationItem', { id: key, text: boundedText(String(item.title || ''), 512, '…'),
           subtitle: `#${item.number} · ${itemRepository(item)}`, symbol: 'person.crop.circle', tone: 'neutral', action: `item:${key}`,
           ...(avatar ? { avatarBase64: avatar } : {}) }, [node('badge', itemState)]);
@@ -1638,7 +1697,30 @@
         : t('Try another state or switch between Issues and pull requests.', '尝试其他状态，或切换 Issues 与 PR。'), symbol: state.kind === 'pulls' ? 'arrow.triangle.pull' : 'tray' },
       [button(filtered ? t('Clear filters', '清除筛选') : t('Show all states', '查看全部状态'), filtered ? 'clear-filters' : 'all-states', false, { appearance: 'secondary' })]);
   }
+  function collectParticipants(main) {
+    const images = [];
+    let unlinkedCommit = false;
+    const visit = entry => {
+      const participant = participantButtons.get(entry);
+      if (participant?.source) visibleParticipants.set(avatarKey(participant.source), participant.source);
+      if (participant?.unlinkedCommit) unlinkedCommit = true;
+      if (participant && entry.avatarBase64) images.push(entry);
+      for (const child of [...(entry.children || []), ...(entry.items || [])]) visit(child);
+    };
+    visit(main);
+    return { images, unlinkedCommit };
+  }
+  async function loadParticipantCommits() {
+    const model = pullDetails.current, current = generation, user = state.user;
+    if (!model || participantCommitsOperation === model || model.sections.commits.loaded && !model.sections.commits.nextPage || model.sections.commits.loading || model.sections.commits.error) return;
+    participantCommitsOperation = model;
+    try {
+      await pullDetails.more('commits');
+      if (current === generation && state.user === user && pullDetails.current === model && state.detailsVisible) invalidatePanel(current, user);
+    } finally { if (participantCommitsOperation === model) participantCommitsOperation = null; }
+  }
   function view() {
+    participantButtons = new WeakMap(); visibleParticipants = new Map(); visibleParticipantPage = participantPage();
     if (restoreOperation?.generation === generation) return node('emptyState', { id: 'github-restoring', text: t('Connecting to GitHub…', '正在连接 GitHub…'),
       subtitle: t('Restoring your account and loading your work.', '正在恢复账号并加载工作条目。') }, [node('progress')]);
     if (!state.user) return connectionView();
@@ -1660,9 +1742,16 @@
     } else {
       main = state.selected && state.detailsVisible ? detailView() : column([header, emptyListView()]);
     }
+    const participants = collectParticipants(main);
+    if (participants.unlinkedCommit && visibleParticipantPage && state.kind === 'pulls') void loadParticipantCommits().catch(() => {});
     const properties = { id: 'github-workspace', action: 'close-detail', value: state.selected && state.detailsVisible ? itemKey(state.selected) : '' };
     let avatarCount = visibleItems.length;
     let sidebar = itemSidebar(visibleItems, items.length, avatarCount);
+    for (const image of participants.images.slice().reverse()) {
+      if (encodedViewSize({ type: 'workspace', ...properties, children: [sidebar, main] }) <= 400 * 1024) break;
+      delete image.avatarBase64;
+      image.symbol = 'person.crop.circle';
+    }
     if (avatarCount > 0 && encodedViewSize({ type: 'workspace', ...properties, children: [sidebar, main] }) > 400 * 1024) {
       let minimum = 0, maximum = avatarCount;
       while (minimum < maximum) {
@@ -1698,7 +1787,15 @@
     }
   });
   const pullView = createPullRequestView({ node, t, boundedText, displayedBody, short, itemStatus, itemDate,
-    avatarFor: login => login === state.user?.login ? state.avatarBase64 : ownerAvatars.get(login)?.base64,
+    avatarFor: account => {
+      const source = participantSource(account);
+      if (!source) return null;
+      return source.accountAvatar ? state.avatarBase64 : cachedAvatar(source)?.base64;
+    },
+    onAuthorButton: (button, account, entry) => participantButtons.set(button, {
+      source: participantSource(account), unlinkedCommit: !account.login && entry.event === 'committed' && /^[a-f\d]{40}$/i.test(entry.sha || '') &&
+        !pullDetails.current?.sections.commits.items.some(commit => commit.sha?.toLowerCase() === entry.sha.toLowerCase()),
+    }),
     supportsTextEditor: typeof nora.ui.textEditor === 'function', supportsNativeDiff: typeof nora.ui.diff === 'function',
     supportsNativeLayout: ['detail', 'tabBar', 'splitView', 'itemRow'].every(kind => typeof nora.ui[kind] === 'function') });
   nora.registerPanel(panelID, async (event = {}) => {
@@ -1709,6 +1806,7 @@
     if (commentField && typeof values[commentField] === 'string') pullDetails.setCommentDraft(values[commentField]);
     try {
       const action = event.action;
+      if (['refresh', 'refresh-detail', 'pr-refresh'].includes(action)) retryFailedAvatars();
       if (!action && !state.restored && supportsPanelInvalidation) {
         startRestore();
         return view();
@@ -1846,8 +1944,10 @@
       }
       else if (action === 'open-item' && state.selected) await web(state.selected.html_url);
     } catch (error) { if (revision === renderRevision) state.error = error?.message || message.network; }
+    const result = view();
     void loadOwnerAvatars().catch(() => {});
-    return view();
+    void loadParticipantAvatars().catch(() => {});
+    return result;
   });
   nora.registerCommand('com.nora.github.listRepositories', listRepositories);
   nora.registerCommand('com.nora.github.listIssues', args => listItems(args, 'issues'));
