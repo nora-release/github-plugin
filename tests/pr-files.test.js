@@ -24,7 +24,7 @@ function routeFor(files, override = () => undefined) {
   };
 }
 async function openFiles(f, number = 1) {
-  await f.render({}); await f.render({ action: 'kind:pulls' });
+  await f.renderReady({}); await f.render({ action: 'kind:pulls' });
   await f.render({ action: `item:item-alice/project/${number}` });
   return f.render({ action: 'pr-tab:files' });
 }
@@ -84,7 +84,7 @@ test('File API pages remain lazy and retain the selected filename while appendin
     return url.searchParams.get('page') === '1'
       ? body([first], 200, { link: '<https://api.github.com/repos/alice/project/pulls/1/files?page=2>; rel="next"' }) : body([second]);
   }) });
-  await f.render({}); await f.render({ action: 'kind:pulls' }); await f.render({ action: 'item:item-alice/project/1' });
+  await f.renderReady({}); await f.render({ action: 'kind:pulls' }); await f.render({ action: 'item:item-alice/project/1' });
   assert.ok(!f.requests.some(request => new URL(request.url).pathname.endsWith('/files')));
   let current = await f.render({ action: 'pr-tab:files' });
   assert.ok(nodes(current).some(node => node.action === 'pr-more:files'));
@@ -113,7 +113,7 @@ test('A full PR feed and 200 long file names keep both selected tails and the or
     const page = Number(url.searchParams.get('page'));
     return body(files.slice((page - 1) * 30, page * 30), 200, page < 7 ? { link: `<https://api.github.com/repos/alice/project/pulls/400/files?page=${page + 1}>; rel="next"` } : {});
   }) });
-  await f.render({}); await f.render({ action: 'kind:pulls' });
+  await f.renderReady({}); await f.render({ action: 'kind:pulls' });
   for (let page = 2; page <= 8; page++) await f.render({ action: 'more-items' });
   await f.render({ action: 'item:item-alice/project/400' }); await f.render({ action: 'pr-tab:files' });
   for (let page = 2; page <= 7; page++) await f.render({ action: 'pr-more:files' });

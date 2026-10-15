@@ -19,7 +19,7 @@ for (const [kind, extra, label, tone, symbol] of [
   test(`A ${kind} PR uses the exact provided SVG in its sidebar and detail badge`, async () => {
     const item = pull(7, extra);
     const f = fixture({ saved: connection, route: async url => basics(url) || body(url.pathname === '/issues' ? [item] : item) });
-    await f.render({});
+    await f.renderReady({});
     const overview = await f.render({ action: 'kind:pulls' });
     const selected = await f.render({ action: 'item:item-alice/project/7' });
     for (const badge of [overview.children[0].items[0].children[0], selected.children[0].items[0].children[0], detailBadge(selected)]) {
@@ -37,7 +37,7 @@ test('Merged PRs retain their merge symbol and take precedence over closed or dr
   for (const extra of [{ merged_at: '2026-10-14' }, { pull_request: { merged_at: '2026-10-14' } }]) {
     const item = pull(7, { state: 'closed', draft: true, ...extra });
     const f = fixture({ saved: connection, route: async url => basics(url) || body(url.pathname === '/issues' ? [item] : item) });
-    await f.render({});
+    await f.renderReady({});
     await f.render({ action: 'kind:pulls' });
     const selected = await f.render({ action: 'item:item-alice/project/7' });
     for (const badge of [selected.children[0].items[0].children[0], detailBadge(selected)]) {
@@ -53,7 +53,7 @@ test('Issue badges retain their semantic circles without any PR SVG', async () =
   for (const [state, symbol, tone] of [['open', 'circle.circle', 'success'], ['closed', 'checkmark.circle', 'accent']]) {
     const item = issue(7, 'Issue 7', { state });
     const f = fixture({ saved: connection, route: async url => basics(url) || body(url.pathname === '/issues' ? [item] : item) });
-    const overview = await f.render({});
+    const overview = await f.renderReady({});
     const selected = await f.render({ action: 'item:item-alice/project/7' });
     for (const badge of [overview.children[0].items[0].children[0], detailBadge(selected)]) {
       assert.equal(badge.iconSVG, undefined);
@@ -68,7 +68,7 @@ test('A full draft PR detail updates the sidebar from the open SVG to the draft 
   const item = pull(7);
   const f = fixture({ saved: connection, route: async url => basics(url) ||
     body(url.pathname === '/issues' ? [item] : { ...item, draft: true }) });
-  await f.render({});
+  await f.renderReady({});
   const overview = await f.render({ action: 'kind:pulls' });
   assert.equal(overview.children[0].items[0].children[0].iconSVG, expectedIcons.open);
   const selected = await f.render({ action: 'item:item-alice/project/7' });
@@ -82,7 +82,7 @@ test('Paginated PR SVG badges stay inside Swift encoded view and node limits', a
     const number = (Number(url.searchParams.get('page')) - 1) * 50 + index + 1;
     return pull(number, number % 3 === 0 ? { draft: true } : number % 3 === 1 ? {} : { state: 'closed' });
   }), 200, { link: '<https://api.github.com/issues?page=2>; rel="next"' }) });
-  await f.render({});
+  await f.renderReady({});
   let view = await f.render({ action: 'kind:pulls' });
   for (let page = 2; page <= 8; page++) view = await f.render({ action: 'more-items' });
   const withSwiftDefaults = item => ({ ...item, disabled: item.disabled || false, options: item.options || [],

@@ -38,7 +38,7 @@ test('The first sidebar row is the username menu with the real public avatar and
     if (url.pathname === '/user/repos') return body([repo()]);
     return itemResponse(url, [issue(1, 'Issue one')]);
   } });
-  const view = await f.render({});
+  const view = await f.renderReady({});
   const account = accountHeader(view);
   assert.equal(account.type, 'menu');
   assert.equal(account.text, 'alice');
@@ -56,7 +56,7 @@ test('The first sidebar row is the username menu with the real public avatar and
 test('The account menu starts with repository actions without repeating the username', async () => {
   for (const locale of ['en', 'zh-Hans']) {
     const f = fixture({ saved: connection, locale });
-    const account = accountHeader(await f.render({}));
+    const account = accountHeader(await f.renderReady({}));
     assert.equal(account.text, 'alice');
     assert.equal(nodes(account).filter(node => node.text === 'alice').length, 1);
     assert.equal(account.children[0].type, 'button');
@@ -79,7 +79,7 @@ test('Missing or untrusted avatar URLs keep the account placeholder without requ
       if (url.pathname === '/user/repos') return body([repo()]);
       return itemResponse(url, [issue(1, 'Issue one')]);
     } });
-    const view = await f.render({});
+    const view = await f.renderReady({});
     assert.equal(accountHeader(view).text, 'alice');
     assert.equal(accountHeader(view).symbol, 'person.crop.circle');
     assert.equal(accountHeader(view).avatarBase64, undefined);
@@ -106,7 +106,7 @@ test('Unavailable malformed oversized and non-image avatars never fail the conne
       if (url.pathname === '/user/repos') return body([repo()]);
       return itemResponse(url, [issue(1, 'Issue one')]);
     } });
-    const view = await f.render({});
+    const view = await f.renderReady({});
     assert.equal(accountHeader(view).text, 'alice');
     assert.equal(accountHeader(view).avatarBase64, undefined);
     assert.match(texts(view), /Issue one/);
@@ -128,7 +128,7 @@ test('The public avatar is cached across filtering repository refreshes and Issu
   } });
   for (const event of [{}, { action: 'query', values: { query: 'Issue' } },
     { action: 'refresh-repos' }, { action: 'kind:pulls' }, { action: 'refresh' }]) {
-    assert.equal(accountHeader(await f.render(event)).avatarBase64, avatarJPEG);
+    assert.equal(accountHeader(await f.renderReady(event)).avatarBase64, avatarJPEG);
   }
   assert.equal(f.requests.filter(request => request.responseEncoding === 'base64').length, 1);
 });
@@ -151,8 +151,12 @@ test('A token connection also loads the public avatar while repository loading r
   await started.promise;
   await new Promise(resolve => setImmediate(resolve));
   assert.equal(repositoriesLoaded, true);
+  const initial = await connecting;
+  assert.equal(accountHeader(initial).avatarBase64, undefined);
+  assert.match(texts(initial), /Issue one/);
   release.resolve();
-  const view = await connecting;
+  await new Promise(resolve => setImmediate(resolve));
+  const view = await f.renderReady({});
   assert.equal(accountHeader(view).avatarBase64, avatarPNG);
   assert.match(texts(view), /Issue one/);
   assert.equal(JSON.parse(f.stored()).token, 'test_token');
@@ -199,8 +203,10 @@ test('An old avatar response cannot replace the newer accounts avatar or usernam
   const current = await f.render({ action: 'connect-token', values: { token: 'newer_token' } });
   assert.equal(accountHeader(current).text, 'bob');
   assert.equal(accountHeader(current).avatarBase64, avatarJPEG);
+  assert.equal(accountHeader(await older).text, 'alice', 'The old readable snapshot must not wait for its optional avatar');
   release.resolve();
-  const late = await older;
+  await new Promise(resolve => setImmediate(resolve));
+  const late = await f.renderReady({});
   assert.equal(accountHeader(late).text, 'bob');
   assert.equal(accountHeader(late).avatarBase64, avatarJPEG);
   assert.equal(JSON.parse(f.stored()).token, 'newer_token');
@@ -214,7 +220,7 @@ test('Disconnect clears the avatar and a new connection fetches its own copy', a
     if (url.pathname === '/user/repos') return body([repo()]);
     return itemResponse(url, [issue(1, 'Issue one')]);
   } });
-  assert.equal(accountHeader(await f.render({})).avatarBase64, avatarPNG);
+  assert.equal(accountHeader(await f.renderReady({})).avatarBase64, avatarPNG);
   const disconnected = await f.render({ action: 'disconnect' });
   assert.equal(disconnected.type, 'emptyState');
   assert.ok(nodes(disconnected).every(node => node.avatarBase64 === undefined));
@@ -232,7 +238,7 @@ test('Script manifest has no native extension or signing identity', async () => 
 });
 test('Disconnected native view describes the user account and never exposes App setup', async () => {
   const f = fixture();
-  const view = await f.render({});
+  const view = await f.renderReady({});
   assert.match(texts(view), /your own account/);
   assert.equal(view.type, 'emptyState');
   assert.ok(nodes(view).some(node => node.action === 'begin-login' && node.appearance === 'primary'));
@@ -245,14 +251,14 @@ test('Disconnected native view describes the user account and never exposes App 
   assert.deepEqual(f.links, ['https://github.com/apps/nora-github-plugin/installations/new']);
 });
 test('Chinese view uses the same public SDK with native controls', async () => {
-  const view = await fixture({ locale: 'zh-Hans' }).render({});
+  const view = await fixture({ locale: 'zh-Hans' }).renderReady({});
   assert.match(texts(view), /连接你自己的账号/);
   assert.match(texts(view), /管理仓库访问权限/);
   assert.ok(nodes(view).every(node => !['html', 'webview'].includes(node.type)));
 });
 test('Repos and Issues are read under the connected user credentials', async () => {
   const f = fixture({ saved: JSON.stringify(connection) });
-  const view = await f.render({});
+  const view = await f.renderReady({});
   assert.match(texts(view), /alice/);
   assert.match(texts(view), /Issue one/);
   assert.ok(apiRequests(f).every(request => request.headers.Authorization === 'Bearer test_token'));
@@ -271,7 +277,7 @@ test('Issues exclude PRs and the PR view exposes draft and merged states', async
       issue(3, 'Work in progress', { pull_request: {}, draft: true }),
       issue(4, 'Finished', { pull_request: {}, state: 'closed', merged_at: '2026-10-01T00:00:00Z' })]);
   } });
-  assert.doesNotMatch(texts(await f.render({})), /Work in progress|Finished/);
+  assert.doesNotMatch(texts(await f.renderReady({})), /Work in progress|Finished/);
   const view = await f.render({ action: 'kind', values: { kind: 'pulls' } });
   assert.match(texts(view.children[0]), /Work in progress/);
   assert.match(texts(view.children[0]), /Finished/);
@@ -300,7 +306,7 @@ test('Local filters avoid requests and opening an issue retrieves its full descr
     if (url.pathname === '/user/repos') return body([repo()]);
     return itemResponse(url, [issue(1, 'Alpha'), issue(2, 'Beta')]);
   } });
-  await f.render({});
+  await f.renderReady({});
   const before = f.requests.length;
   const view = await f.render({ action: 'query', values: { query: 'Beta' } });
   assert.doesNotMatch(texts(view), /Alpha/);
@@ -320,7 +326,7 @@ test('Page loading deduplicates and commands validate untrusted repository input
     if (url.pathname === '/user/repos') return body([repo()]);
     return url.searchParams.get('page') === '2' ? itemResponse(url, [issue(1, 'Alpha'), issue(2, 'Beta')]) : itemResponse(url, [issue(1, 'Alpha')], 200, { link: '<https://api.github.com/repos/alice/project/issues?page=2>; rel="next"' });
   } });
-  await f.render({});
+  await f.renderReady({});
   const view = await f.render({ action: 'more-items' });
   assert.equal(nodes(view).filter(node => node.id === 'item-alice/project/1').length, 1);
   assert.match(texts(view), /Beta/);
@@ -367,11 +373,13 @@ test('Disconnect during an old repository response never restores that account',
     if (url.pathname === '/user/repos') { started(); await wait; return body([repo()]); }
     return body([]);
   } });
-  const restore = f.render({});
+  const restore = await f.render({});
+  assert.equal(restore.id, 'github-restoring');
   await pending;
   await f.render({ action: 'disconnect' });
   release();
-  const view = await restore;
+  await new Promise(resolve => setImmediate(resolve));
+  const view = await f.renderReady({});
   assert.doesNotMatch(texts(view), /alice/);
   assert.equal(f.stored(), null);
   assert.ok(nodes(view).some(node => node.action === 'begin-login'));
@@ -479,7 +487,7 @@ test('A repository switch clears old details immediately and ignores a late olde
     if (url.pathname.includes('/second/')) { started.resolve(); await release.promise; return itemResponse(url, [repositoryIssue(url, 2, 'Stale second result')]); }
     return itemResponse(url, [repositoryIssue(url, 1, 'First result', { body: 'Old selected details' })]);
   } });
-  await f.render({});
+  await f.renderReady({});
   await f.render({ action: 'item:item-alice/project/1' });
   const older = f.render({ action: 'repository', values: { repository: 'alice/second' } });
   await started.promise;
@@ -559,7 +567,7 @@ test('Oversized Unicode descriptions stay within native view limits and retain t
     if (url.pathname === '/user/repos') return body([repo()]);
     return itemResponse(url, [issue(1, 'Large description', { body: description })]);
   } });
-  await f.render({});
+  await f.renderReady({});
   const detail = await f.render({ action: 'item:item-alice/project/1' });
   const descriptionNode = nodes(detail).find(node => node.text?.includes('描述过长已截断'));
   assert.ok(descriptionNode);
@@ -578,7 +586,7 @@ test('A native workspace lists issues in its sidebar and opens full details dire
     if (url.pathname === '/user/repos') return body([repo()]);
     return itemResponse(url, [issue(1, 'Fix the editor', { updated_at: '2026-10-10T10:00:00Z', labels: [{ name: 'bug' }], body: '## Details\nA real description.' })]);
   } });
-  const initial = await f.render({});
+  const initial = await f.renderReady({});
   assert.equal(initial.type, 'workspace');
   assert.equal(initial.children.length, 2);
   const sidebar = initial.children[0];
@@ -619,7 +627,7 @@ test('A native workspace lists issues in its sidebar and opens full details dire
 
 test('Account and repository utilities stay in menus and manual repository entry is an explicit operation', async () => {
   const f = fixture({ saved: connection });
-  const view = await f.render({});
+  const view = await f.renderReady({});
   assert.ok(!nodes(view).some(node => node.id === 'manual-repo' || node.type === 'secureField'));
   const repositoryMenu = nodes(view).find(node => node.type === 'menu' && node.children.some(child => child.action === 'show-other-repo'));
   assert.ok(repositoryMenu.children.some(child => child.action === 'show-other-repo'));
@@ -645,7 +653,7 @@ test('Search repository and status filters stay with the issue list while accoun
     return itemResponse(url, [issue(1, 'Editor fix'), issue(2, 'Settings fix', { user: { login: 'bob' } }),
       issue(3, 'Review native changes', { pull_request: {} })]);
   } });
-  const initial = await f.render({});
+  const initial = await f.renderReady({});
   const [sidebar, main] = initial.children;
   assert.ok(nodes(sidebar).some(node => node.id === 'query' && node.placeholder === 'Search loaded items'));
   assert.ok(nodes(sidebar).some(node => node.id === 'repository' && node.value === ''));
@@ -682,7 +690,7 @@ test('A selected PR has one detail header and a complete Markdown description be
       html_url: 'https://github.com/alice/project/pull/42', body: '## Changes\nPreserve the selection.\n\n- Keep keyboard focus.'
     })]);
   } });
-  await f.render({});
+  await f.renderReady({});
   await f.render({ action: 'kind:pulls' });
   const requestCount = f.requests.length;
   const selected = await f.render({ action: 'item:item-alice/project/42' });
@@ -725,7 +733,7 @@ test('Sidebar rows stay compact while the full detail keeps every review label',
     return itemResponse(url, [issue(7, 'Keep all review labels', { user: { login: 'a-long-repository-author' },
       updated_at: '2026-10-10T10:00:00Z', labels })]);
   } });
-  const initial = await f.render({});
+  const initial = await f.renderReady({});
   const item = initial.children[0].items[0];
   assert.equal(item.type, 'navigationItem');
   assert.equal(item.text, 'Keep all review labels');
@@ -748,7 +756,7 @@ test('Local author label and search filters never fetch data and hide details th
     if (url.pathname === '/user/repos') return body([repo()]);
     return itemResponse(url, [issue(1, 'Editor bug', { labels: [{ name: 'bug' }] }), issue(2, 'Design change', { user: { login: 'bob' }, labels: [{ name: 'design' }] })]);
   } });
-  await f.render({});
+  await f.renderReady({});
   await f.render({ action: 'item:item-alice/project/1' });
   const count = f.requests.length;
   const author = await f.render({ action: 'author', values: { author: 'bob' } });
@@ -770,7 +778,7 @@ test('An empty GitHub view has one recovery state and changing API state retriev
     if (url.pathname === '/user/repos') return body([repo()]);
     return body(url.searchParams.get('state') === 'all' ? [issue(1, 'A closed issue', { state: 'closed' })] : []);
   } });
-  const empty = await f.render({});
+  const empty = await f.renderReady({});
   assert.equal(nodes(empty).filter(node => node.type === 'emptyState').length, 1);
   assert.ok(nodes(empty).some(node => node.action === 'all-states'));
   const all = await f.render({ action: 'all-states' });
@@ -789,7 +797,7 @@ test('A stale repository failure cannot replace the newest repository or its sel
     if (url.pathname.includes('/second/')) { started.resolve(); await release.promise; return body({}, 403); }
     return itemResponse(url, [repositoryIssue(url, 1, 'Current first repository', { body: 'Current details' })]);
   } });
-  await f.render({});
+  await f.renderReady({});
   const older = f.render({ action: 'repository', values: { repository: 'alice/second' } });
   await started.promise;
   await f.render({ action: 'repository', values: { repository: 'alice/first' } });
@@ -813,7 +821,7 @@ test('Fast Issues PR and state changes ignore late results and failures from the
     return itemResponse(url, [issue(1, 'Initial Issue'), issue(2, 'Merged current PR', {
       pull_request: {}, state: 'closed', merged_at: '2026-10-10T00:00:00Z', html_url: 'https://github.com/alice/project/pull/2' })]);
   } });
-  await f.render({});
+  await f.renderReady({});
   const earlier = f.render({ action: 'kind:pulls', values: { 'view-navigation': 'view-pulls' } });
   await started.promise;
   const latest = await f.render({ action: 'status', values: { status: 'all' } });
@@ -835,7 +843,7 @@ test('The current data error remains recoverable after a local search during its
     if (url.searchParams.get('state') === 'closed' && fails) { started.resolve(); await release.promise; return body({}, 403); }
     return itemResponse(url, [issue(1, 'Recovered issue', { state: url.searchParams.get('state') })]);
   } });
-  await f.render({});
+  await f.renderReady({});
   const changing = f.render({ action: 'status', values: { status: 'closed' } });
   await started.promise;
   const pending = await f.render({ action: 'query', values: { query: 'Recovered' } });
@@ -845,7 +853,7 @@ test('The current data error remains recoverable after a local search during its
   assert.match(texts(failed), /access was denied/);
   assert.ok(nodes(failed).some(node => node.action === 'retry-load'));
   fails = false;
-  const recovered = await f.render({ action: 'retry-load' });
+  const recovered = await f.renderReady({ action: 'retry-load' });
   assert.match(texts(recovered), /Recovered issue/);
   assert.doesNotMatch(texts(recovered), /access was denied/);
   assert.equal(nodes(recovered).find(node => node.id === 'status').value, 'closed');
@@ -860,11 +868,11 @@ test('A transient saved-account error can retry or begin OAuth without a success
     if (url.pathname === '/user/repos') return body([repo()]);
     return body([]);
   } });
-  const failed = await f.render({});
+  const failed = await f.renderReady({});
   assert.equal(failed.type, 'emptyState');
   assert.ok(nodes(failed).some(node => node.action === 'retry-load'));
   fails = false;
-  const recovered = await f.render({ action: 'retry-load' });
+  const recovered = await f.renderReady({ action: 'retry-load' });
   assert.equal(recovered.type, 'workspace');
   await f.render({ action: 'disconnect' });
   assert.match(texts(await f.render({ action: 'begin-login' })), /ABCD-1234/);
@@ -879,7 +887,7 @@ test('Paginated rows remain inside native descriptor limits with an explicit loa
       { labels: [{ name: 'bug' }, { name: 'triage' }], updated_at: '2026-10-10T00:00:00Z' })), 200,
       { link: `<https://api.github.com/repos/alice/project/issues?page=${page + 1}>; rel="next"` });
   } });
-  await f.render({});
+  await f.renderReady({});
   await f.render({ action: 'more-items' });
   const view = await f.render({ action: 'more-items' });
   assert.ok(view.children[0].items.length > 0 && view.children[0].items.length <= 150);
@@ -897,7 +905,7 @@ test('An expired account can reconnect from its data error without restoring the
     if (url.pathname === '/user/repos') return body([repo()]);
     return expired ? body({}, 401) : itemResponse(url, [issue(1, 'Existing issue')]);
   } });
-  await f.render({});
+  await f.renderReady({});
   expired = true;
   const failed = await f.render({ action: 'status', values: { status: 'closed' } });
   assert.ok(nodes(failed).some(node => node.action === 'begin-login'));
@@ -924,7 +932,7 @@ test('The sidebar lists account items and repository selection narrows the exist
     return itemResponse(url, [issue(1, 'First issue', { repository_url: `https://api.github.com/repos/${repository}`,
       html_url: `https://github.com/${repository}/issues/1` }), pullRequest]);
   } });
-  const initial = await f.render({});
+  const initial = await f.renderReady({});
   const selector = nodes(initial.children[0]).find(node => node.id === 'repository');
   assert.equal(selector.value, '');
   assert.deepEqual(Array.from(selector.options, option => option.value), ['', 'alice/first', 'team/second']);
@@ -948,7 +956,7 @@ test('Repository pagination expands the optional filter without replacing the is
       : body([repo('alice/first')], 200, { link: '<https://api.github.com/user/repos?page=2>; rel="next"' });
     return itemResponse(url, [issue(1, 'Issue list remains visible')]);
   } });
-  const initial = await f.render({});
+  const initial = await f.renderReady({});
   const initialFilter = nodes(initial.children[0]).find(node => node.id === 'repository');
   assert.deepEqual(Array.from(initialFilter.options, option => option.value), ['', 'alice/first']);
   assert.equal(initialFilter.value, '');
@@ -970,7 +978,7 @@ test('Hand to Nora creates a source-rich draft only from the explicit selected-d
     if (url.pathname === '/user/repos') return body([repo()]);
     return itemResponse(url, [issue(42, 'Fix issue context', { body: '## Reproduction\nThe editor loses focus.', state: 'closed' })]);
   } });
-  await f.render({});
+  await f.renderReady({});
   assert.equal(f.drafts.length, 0);
   const selected = await f.render({ action: 'item:item-alice/project/42' });
   assert.ok(nodes(selected.children[1]).some(node => node.action === 'handoff-item' && node.appearance === 'primary'));
@@ -1001,7 +1009,7 @@ test('Nora draft context tracks the current repository PR and rejects stale or h
       pull_request: {}, state: 'closed', merged_at: '2026-10-10T00:00:00Z',
       repository_url: 'https://api.github.com/repos/team/second', html_url: 'https://github.com/team/second/pull/7' })]);
   } });
-  await f.render({});
+  await f.renderReady({});
   await f.render({ action: 'item:item-alice/project/7' });
   await f.render({ action: 'repository', values: { repository: 'team/second' } });
   await f.render({ action: 'handoff-item' });
@@ -1023,7 +1031,7 @@ test('Large Unicode GitHub source becomes a bounded Nora draft with intact text 
     if (url.pathname === '/user/repos') return body([repo()]);
     return itemResponse(url, [issue(9, '你好🧑🏽‍💻'.repeat(100), { body: '你好🧑🏽‍💻'.repeat(30_000) })]);
   } });
-  await f.render({});
+  await f.renderReady({});
   await f.render({ action: 'item:item-alice/project/9' });
   await f.render({ action: 'handoff-item' });
   const draft = f.drafts[0];
@@ -1047,7 +1055,7 @@ test('Large repository filters and paginated issue lists remain inside native vi
       { labels: [{ name: 'bug' }, { name: 'triage' }], updated_at: '2026-10-10T00:00:00Z' })), 200,
       { link: `<https://api.github.com/issues?page=${page + 1}>; rel="next"` });
   } });
-  await f.render({});
+  await f.renderReady({});
   for (let page = 2; page <= 4; page += 1) await f.render({ action: 'more-repos' });
   await f.render({ action: 'more-items' });
   const view = await f.render({ action: 'more-items' });
@@ -1074,7 +1082,7 @@ test('Large repository filters and paginated issue lists remain inside native vi
 
 test('Handoff requires the current explicit action capability and never saves that capability as content', async () => {
   const f = fixture({ saved: connection });
-  await f.render({});
+  await f.renderReady({});
   await f.render({ action: 'item:item-alice/project/1' });
   const missing = await f.renderUnscoped({ action: 'handoff-item' });
   assert.match(texts(missing), /requires an explicit panel action/);
@@ -1102,7 +1110,7 @@ test('Background draft calls cannot borrow an unrelated action that is still loa
     }
     return itemResponse(url, [issue(1, 'Issue one')]);
   } });
-  await f.render({});
+  await f.renderReady({});
   waits = true;
   const refreshing = f.render({ action: 'refresh' });
   await started.promise;

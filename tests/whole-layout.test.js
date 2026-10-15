@@ -4,7 +4,7 @@ import { fixture, body, nodes, texts, connection } from './fixtures/plugin-fixtu
 
 test('Issues use the same fixed native detail structure and preserve read-only actions', async () => {
   const f = fixture({ saved: connection });
-  const overview = await f.render({});
+  const overview = await f.renderReady({});
   assert.ok(nodes(overview.children[0]).some(value => value.id === 'github-feed-controls' && value.appearance === 'plain'));
   const selected = await f.render({ action: 'item:item-alice/project/1' });
   const detail = selected.children[1];
@@ -22,7 +22,7 @@ test('Issues use the same fixed native detail structure and preserve read-only a
 
 test('Older Nora hosts retain the compatible Issue description without unsupported detail views', async () => {
   const f = fixture({ saved: connection, unavailableViewKinds: ['detail'] });
-  await f.render({});
+  await f.renderReady({});
   const selected = await f.render({ action: 'item:item-alice/project/1' });
   assert.equal(selected.children[1].type, 'column');
   assert.ok(nodes(selected).some(value => value.type === 'markdown' && value.text === 'Description'));
@@ -32,7 +32,7 @@ test('Older Nora hosts retain the compatible Issue description without unsupport
 
 test('Connecting GitHub has one main action and keeps the token form optional', async () => {
   const f = fixture();
-  const initial = await f.render({});
+  const initial = await f.renderReady({});
   assert.equal(initial.type, 'emptyState');
   assert.equal(nodes(initial).filter(value => value.appearance === 'primary').length, 1);
   assert.ok(!nodes(initial).some(value => value.type === 'secureField'));
@@ -61,7 +61,7 @@ test('The device-code form groups verification and gives completion the main act
 
 test('Opening another repository uses one bounded form and preserves invalid input for correction', async () => {
   const f = fixture({ saved: connection });
-  await f.render({});
+  await f.renderReady({});
   const formView = await f.render({ action: 'show-other-repo' });
   const form = nodes(formView).find(value => value.id === 'github-repository-form');
   assert.equal(form.appearance, 'secondary');

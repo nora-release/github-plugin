@@ -906,6 +906,9 @@
   let repoRevision = 0;
   let refreshOperation = null;
   let avatarOperation = null;
+  let panelInvalidation = null;
+  let restoreOperation = null;
+  const supportsPanelInvalidation = typeof nora.panels?.invalidate === 'function';
   let credentialWrites = Promise.resolve();
   let renderRevision = 0;
   const node = (type, properties = {}, children = []) => nora.ui.node(type, properties, children);
@@ -1183,6 +1186,22 @@
     query.push('s=64');
     return `https://avatars.githubusercontent.com${match[2] || '/'}?${query.join('&')}`;
   }
+  function invalidatePanel(current = generation, user = state.user) {
+    if (!supportsPanelInvalidation || current !== generation || state.user !== user) return;
+    if (panelInvalidation?.generation === current) { panelInvalidation.again = true; return; }
+    const operation = { generation: current, again: false };
+    panelInvalidation = operation;
+    Promise.resolve().then(async () => {
+      if (current !== generation || state.user !== user || panelInvalidation !== operation) return;
+      await nora.panels.invalidate(panelID);
+    }).catch(() => {
+      // Earlier hosts keep the cached images for the next user-driven render.
+    }).finally(() => {
+      if (panelInvalidation !== operation) return;
+      panelInvalidation = null;
+      if (operation.again) invalidatePanel(current, user);
+    });
+  }
   async function loadAvatar() {
     const current = generation, user = state.user;
     if (!user) return;
@@ -1202,6 +1221,9 @@
             typeof response.bodyBase64 !== 'string' || !response.bodyBase64) return;
         const validated = node('menu', { text: user.login, avatarBase64: response.bodyBase64 });
         state.avatarBase64 = validated.avatarBase64 || null;
+        const owner = ownerAvatars.get(user.login.toLowerCase());
+        if (owner?.url === url) owner.base64 = state.avatarBase64;
+        invalidatePanel(current, user);
       } catch {
         // Account navigation remains usable when the optional public avatar is unavailable.
       } finally {
@@ -1268,6 +1290,7 @@
           const padding = response.bodyBase64.endsWith('==') ? 2 : response.bodyBase64.endsWith('=') ? 1 : 0;
           if (response.bodyBase64.length / 4 * 3 - padding > 8 * 1024) return;
           entry.base64 = validated.avatarBase64 || null;
+          invalidatePanel(current, user);
         } catch {
           // Optional owner images must never prevent reading or paging GitHub work items.
         } finally {
@@ -1284,6 +1307,8 @@
   function clearAccount() {
     state.user = null; state.repos = []; state.repo = ''; state.items = []; state.selected = null; state.device = null;
     state.avatarBase64 = null; state.avatarAccount = ''; state.avatarURL = ''; avatarOperation = null;
+    panelInvalidation = null;
+    restoreOperation = null;
     ownerAvatars.clear(); state.itemLoadError = ''; state.itemRetryAppend = false;
     state.moreItems = false; state.moreRepos = false;
     state.page = 1; state.repoPage = 1; state.query = ''; state.repoQuery = ''; state.author = ''; state.label = ''; state.kind = 'issues'; state.status = 'open';
@@ -1296,11 +1321,25 @@
     state.restored = true;
     const current = generation;
     if (!await readSaved()) return;
+    if (current !== generation) return;
     const result = await api('/user');
     if (current !== generation) return;
     if (!result.data || typeof result.data.login !== 'string' || !result.data.login) throw new Error(message.invalid);
     state.user = result.data;
-    await Promise.all([loadRepositories(), loadAvatar(), loadItems()]);
+    void loadAvatar();
+    await Promise.all([loadRepositories(), loadItems()]);
+  }
+  function startRestore() {
+    if (restoreOperation?.generation === generation) return;
+    const current = generation, operation = { generation: current };
+    restoreOperation = operation;
+    operation.promise = restore().catch(error => {
+      if (current === generation && restoreOperation === operation) state.error = error?.message || message.network;
+    }).finally(() => {
+      if (restoreOperation !== operation) return;
+      restoreOperation = null;
+      invalidatePanel(current, state.user);
+    });
   }
   async function beginLogin() {
     const current = ++generation;
@@ -1332,7 +1371,8 @@
     if (!user || typeof user.login !== 'string' || !user.login) throw new Error(message.invalid);
     if (!await saveForGeneration(saved, current) || state.device !== device) return;
     clearAccount(); state.user = user; state.restored = true;
-    await Promise.all([loadRepositories(), loadAvatar(), loadItems()]);
+    void loadAvatar();
+    await Promise.all([loadRepositories(), loadItems()]);
   }
   async function connectToken(value) {
     if (!validToken(value)) throw new Error(t('Enter a valid GitHub access token.', '请输入有效的 GitHub 访问 token。'));
@@ -1343,7 +1383,8 @@
     if (!user || typeof user.login !== 'string' || !user.login) throw new Error(message.invalid);
     if (!await saveForGeneration({ token: value }, current)) return;
     clearAccount(); state.user = user; state.restored = true;
-    await Promise.all([loadRepositories(), loadAvatar(), loadItems()]);
+    void loadAvatar();
+    await Promise.all([loadRepositories(), loadItems()]);
   }
   function itemStatus(item) {
     const isPullRequest = state.kind === 'pulls';
@@ -1595,6 +1636,8 @@
       [button(filtered ? t('Clear filters', '清除筛选') : t('Show all states', '查看全部状态'), filtered ? 'clear-filters' : 'all-states', false, { appearance: 'secondary' })]);
   }
   function view() {
+    if (restoreOperation) return node('emptyState', { id: 'github-restoring', text: t('Connecting to GitHub…', '正在连接 GitHub…'),
+      subtitle: t('Restoring your account and loading your work.', '正在恢复账号并加载工作条目。') }, [node('progress')]);
     if (!state.user) return connectionView();
     const items = filteredItems();
     let visibleItems = items.slice(0, maximumSidebarItems);
@@ -1657,12 +1700,16 @@
     supportsNativeLayout: ['detail', 'tabBar', 'splitView', 'itemRow'].every(kind => typeof nora.ui[kind] === 'function') });
   nora.registerPanel(panelID, async (event = {}) => {
     const revision = ++renderRevision;
-    state.error = '';
+    if (event.action) state.error = '';
     const values = event.values || {};
     const commentField = pullDetails.current?.comment.fieldID;
     if (commentField && typeof values[commentField] === 'string') pullDetails.setCommentDraft(values[commentField]);
     try {
       const action = event.action;
+      if (!action && !state.restored && supportsPanelInvalidation) {
+        startRestore();
+        return view();
+      }
       if (!['disconnect', 'cancel-login', 'begin-login', 'finish-login', 'open-login', 'connect-token', 'toggle-token'].includes(action)) await restore();
       if (action === 'disconnect' || action === 'cancel-login') {
         ++generation; clearAccount(); state.restored = true;
@@ -1680,7 +1727,11 @@
       }
       else if (action === 'refresh-repos') await loadRepositories();
       else if (action === 'retry-load') {
-        if (!state.user) { state.restored = false; await restore(); }
+        if (!state.user) {
+          if (!restoreOperation) state.restored = false;
+          if (supportsPanelInvalidation) startRestore();
+          else await restore();
+        }
         else await loadItems(state.itemRetryAppend, true);
       }
       else if (action === 'more-repos') await loadRepositories(true);
@@ -1792,7 +1843,7 @@
       }
       else if (action === 'open-item' && state.selected) await web(state.selected.html_url);
     } catch (error) { if (revision === renderRevision) state.error = error?.message || message.network; }
-    await loadOwnerAvatars();
+    void loadOwnerAvatars().catch(() => {});
     return view();
   });
   nora.registerCommand('com.nora.github.listRepositories', listRepositories);
