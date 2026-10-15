@@ -1326,8 +1326,13 @@
     if (current !== generation) return;
     if (!result.data || typeof result.data.login !== 'string' || !result.data.login) throw new Error(message.invalid);
     state.user = result.data;
+    await loadAccountData();
+  }
+  async function loadAccountData() {
     void loadAvatar();
-    await Promise.all([loadRepositories(), loadItems()]);
+    const results = await Promise.allSettled([loadRepositories(), loadItems()]);
+    const failure = results.find(result => result.status === 'rejected');
+    if (failure) throw failure.reason;
   }
   function startRestore() {
     if (restoreOperation?.generation === generation) return;
@@ -1371,8 +1376,7 @@
     if (!user || typeof user.login !== 'string' || !user.login) throw new Error(message.invalid);
     if (!await saveForGeneration(saved, current) || state.device !== device) return;
     clearAccount(); state.user = user; state.restored = true;
-    void loadAvatar();
-    await Promise.all([loadRepositories(), loadItems()]);
+    await loadAccountData();
   }
   async function connectToken(value) {
     if (!validToken(value)) throw new Error(t('Enter a valid GitHub access token.', '请输入有效的 GitHub 访问 token。'));
@@ -1383,8 +1387,7 @@
     if (!user || typeof user.login !== 'string' || !user.login) throw new Error(message.invalid);
     if (!await saveForGeneration({ token: value }, current)) return;
     clearAccount(); state.user = user; state.restored = true;
-    void loadAvatar();
-    await Promise.all([loadRepositories(), loadItems()]);
+    await loadAccountData();
   }
   function itemStatus(item) {
     const isPullRequest = state.kind === 'pulls';
@@ -1636,7 +1639,7 @@
       [button(filtered ? t('Clear filters', '清除筛选') : t('Show all states', '查看全部状态'), filtered ? 'clear-filters' : 'all-states', false, { appearance: 'secondary' })]);
   }
   function view() {
-    if (restoreOperation) return node('emptyState', { id: 'github-restoring', text: t('Connecting to GitHub…', '正在连接 GitHub…'),
+    if (restoreOperation?.generation === generation) return node('emptyState', { id: 'github-restoring', text: t('Connecting to GitHub…', '正在连接 GitHub…'),
       subtitle: t('Restoring your account and loading your work.', '正在恢复账号并加载工作条目。') }, [node('progress')]);
     if (!state.user) return connectionView();
     const items = filteredItems();
@@ -1728,7 +1731,7 @@
       else if (action === 'refresh-repos') await loadRepositories();
       else if (action === 'retry-load') {
         if (!state.user) {
-          if (!restoreOperation) state.restored = false;
+          if (restoreOperation?.generation !== generation) state.restored = false;
           if (supportsPanelInvalidation) startRestore();
           else await restore();
         }

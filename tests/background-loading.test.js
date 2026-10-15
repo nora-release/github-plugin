@@ -204,3 +204,43 @@ test('A rejected invalidation cannot turn optional image loading into an account
   assert.equal(refreshed.children[0].items[0].avatarBase64, image);
   assert.doesNotMatch(texts(refreshed), /Unsupported notification|could not be reached/);
 });
+
+test('A failed repository request cannot finish restoration before the pending items settle', async () => {
+  const started = deferred(), release = deferred();
+  const f = fixture({ saved: connection, route: async url => {
+    if (url.pathname === '/user') return body({ login: 'alice' });
+    if (url.pathname === '/user/repos') return body({}, 503);
+    started.resolve(); await release.promise; return body([feedItem('team', 1)]);
+  } });
+  try {
+    assert.equal((await f.render({})).id, 'github-restoring');
+    await started.promise; await tick();
+    assert.equal(f.invalidations.length, 0, 'The necessary item request still owns the final restore notification');
+    assert.equal((await f.render({})).id, 'github-restoring');
+  } finally { release.resolve(); }
+  const ready = await f.renderReady({});
+  assert.equal(ready.type, 'workspace');
+  assert.equal(ready.children[0].items.length, 1);
+  assert.ok(!nodes(ready).some(value => value.type === 'progress'), 'The completed list cannot remain stuck in its earlier loading state');
+  assert.match(texts(ready), /could not be reached/);
+});
+
+test('A failed replacement account does not display a cancelled restore generation forever', async () => {
+  const started = deferred(), release = deferred();
+  const f = fixture({ saved: connection, route: async (url, args) => {
+    assert.equal(url.pathname, '/user');
+    if (args.headers.Authorization === 'Bearer rejected_token') return body({}, 401);
+    started.resolve(); await release.promise; return body({ login: 'old-account' });
+  } });
+  try {
+    assert.equal((await f.render({})).id, 'github-restoring');
+    await started.promise;
+    const failed = await f.render({ action: 'connect-token', values: { token: 'rejected_token' } });
+    assert.notEqual(failed.id, 'github-restoring');
+    assert.match(texts(failed), /expired/);
+    assert.equal(f.stored(), connection, 'Failed replacement validation cannot overwrite the saved account');
+  } finally { release.resolve(); }
+  await tick();
+  assert.equal(f.invalidations.length, 0);
+  assert.doesNotMatch(texts(await f.render({})), /old-account/);
+});
