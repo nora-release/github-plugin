@@ -251,7 +251,10 @@ test('Native discussion distinguishes messages from activity without repeating g
   current.item.user = { login: 'author', html_url: 'https://github.com/author' };
   current.item.created_at = '2026-10-14T00:00:00Z';
   current.sections.comments = section([{ id: 1, body: 'Please preserve this comment.', user: { login: 'reviewer' }, created_at: '2026-10-15T00:00:00Z' }]);
-  current.sections.timeline = section([{ id: 2, event: 'ready_for_review', actor: { login: 'author' }, created_at: '2026-10-15T00:01:00Z' }]);
+  current.sections.timeline = section([
+    ...['a', 'b', 'c'].map((digit, index) => ({ event: 'committed', sha: digit.repeat(40), author: { login: 'author', date: `2026-10-14T12:0${index}:00Z` } })),
+    { id: 2, event: 'ready_for_review', actor: { login: 'author' }, created_at: '2026-10-15T00:01:00Z' },
+  ]);
   const content = view('en', { supportsNativeLayout: true }).nativeContent(current), nodes = flatten(content);
   const comment = content.find(value => value.children?.some(child => child.type === 'markdown' && child.text === 'Please preserve this comment.'));
   assert.equal(comment.appearance, 'secondary');
@@ -261,6 +264,20 @@ test('Native discussion distinguishes messages from activity without repeating g
   assert.ok(!nodes.some(value => value.type === 'text' && ['Description', 'Conversation & activity'].includes(value.text)));
   const author = nodes.find(value => value.type === 'button' && value.text === 'author');
   assert.equal(decodeURIComponent(author.action.slice('pr-open:'.length)), 'https://github.com/author');
+  const commits = content.find(value => value.id?.startsWith('pr-activity-group-'));
+  assert.equal(commits.children.length, 3);
+  assert.equal(commits.appearance, undefined, 'Consecutive commits must not repeat the padded event cards');
+  for (const [index, commit] of commits.children.entries()) {
+    assert.equal(commit.type, 'row', 'Author, action, SHA and date belong on the same line');
+    assert.deepEqual(Array.from(commit.children, value => value.type), ['button', 'text', 'button', 'spacer', 'text']);
+    assert.equal(commit.children[1].text, 'pushed a commit');
+    assert.equal(commit.children[4].text, '2026-10-14');
+    assert.equal(decodeURIComponent(commit.children[2].action.slice('pr-open:'.length)), `https://github.com/owner/repo/commit/${['a', 'b', 'c'][index].repeat(40)}`);
+  }
+  assert.ok(content.indexOf(commits) < content.indexOf(comment), 'Git commit dates must retain chronological order');
+  current.sections.timeline = section([{ event: 'committed', sha: headSHA, author: { login: 'author' } }]);
+  const undated = flatten(view('en', { supportsNativeLayout: true }).nativeContent(current));
+  assert.ok(!undated.some(value => value.type === 'text' && /·\s*$/.test(value.text || '')), 'A missing date must not leave a trailing separator');
   assert.equal(nodes.filter(value => value.type === 'textEditor').length, 1);
   assert.ok(nodes.some(value => value.action === 'pr-comment'));
 });

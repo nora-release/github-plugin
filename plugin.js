@@ -288,7 +288,8 @@
       return `pr-open:${encoded.length <= 246 ? encoded : fallbackEncoded.length <= 246 ? fallbackEncoded : encodeURIComponent('https://github.com/')}`;
     };
     const open = (model, label, url, suffix = '', properties = {}) => button(label, openAction(url, prURL(model) + suffix), { symbol: 'arrow.up.forward.square', ...properties });
-    const date = entry => itemDate({ updated_at: entry.submitted_at || entry.created_at || entry.completed_at || entry.started_at || entry.updated_at || entry.commit?.author?.date });
+    const timestamp = entry => entry.submitted_at || entry.created_at || entry.commit?.author?.date || (entry.event === 'committed' ? entry.author?.date : '') || '';
+    const date = entry => itemDate({ updated_at: timestamp(entry) || entry.completed_at || entry.started_at || entry.updated_at });
     const account = (entry, model) => {
       if (entry.event === 'committed') {
         if (typeof entry.author?.login === 'string' && entry.author.login) return entry.author;
@@ -464,7 +465,7 @@
           source = { commented: 'comments', reviewed: 'reviews', 'line-commented': 'reviewComments' }[entry.event] || name;
           if (source !== name && known[source].has(String(entry.id))) continue;
         }
-        activity.push({ source, entry, timestamp: entry.submitted_at || entry.created_at || entry.commit?.author?.date || '' });
+        activity.push({ source, entry, timestamp: timestamp(entry) });
       }
       activity.sort((a, b) => a.timestamp.localeCompare(b.timestamp) || String(a.entry.id || '').localeCompare(String(b.entry.id || '')));
       return { sources, activity };
@@ -710,8 +711,17 @@
       const description = nativeDescription(model);
       const cards = activity.slice(-80).map(({ source, entry }, index) => {
         const isEvent = source === 'timeline';
+        if (isEvent && entry.event === 'committed' && !entry.dismissed_review?.dismissal_message) {
+          const sha = entry.sha || entry.commit_id, created = date(entry);
+          const commitURL = /^[a-f\d]{40}$/i.test(sha || '') ? `https://github.com/${model.repo}/commit/${sha}` : prURL(model) + '/commits';
+          return node('row', { id: `pr-activity-${index}` }, [
+            authorButton(model, entry, prURL(model)), text(eventLabel(entry)),
+            ...(sha ? [button(short(sha, 12), openAction(commitURL, prURL(model) + '/commits'))] : []),
+            node('spacer'), ...(created ? [text(created)] : []),
+          ]);
+        }
         const header = row([authorButton(model, entry, prURL(model)),
-          text(isEvent ? `${eventLabel(entry)} · ${date(entry)}` : date(entry)), node('spacer'),
+          text(isEvent ? [eventLabel(entry), date(entry)].filter(Boolean).join(' · ') : date(entry)), node('spacer'),
           ...(source === 'reviews' ? [reviewState(entry.state)] : []),
           ...(!isEvent ? [open(model, t('View comment on GitHub', '在 GitHub 查看留言'), entry.html_url, '', { appearance: 'icon' })] : []),
         ]);
@@ -726,10 +736,17 @@
         }
         return node('column', { id: `pr-activity-${index}`, appearance: isEvent ? 'plain' : 'secondary' }, children);
       });
+      const groupedCards = [];
+      for (const card of cards) {
+        if (card.type !== 'row') { groupedCards.push(card); continue; }
+        const previous = groupedCards[groupedCards.length - 1];
+        if (previous?.id?.startsWith('pr-activity-group-') && previous.children.length < 6) previous.children.push(card);
+        else groupedCards.push(node('column', { id: `pr-activity-group-${card.id}` }, [card]));
+      }
       const footer = sources.flatMap(([name, label]) => sectionState(model, name, label));
       if (activity.length > 80) footer.push(text(t('Showing part of the loaded history. View the full conversation on GitHub.', '这里只显示部分已加载记录，完整讨论可在 GitHub 查看。')));
       footer.push(nativeReadiness(model), ...nativeCommentComposer(model));
-      return fit(model, [description], cards, footer, '', true);
+      return fit(model, [description], groupedCards, footer, '', true);
     }
     function nativeCommentComposer(model) {
       const children = commentActions(model).filter(value => value.type !== 'divider');
