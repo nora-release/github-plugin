@@ -276,7 +276,7 @@
     }
     return { get current() { return model; }, reset() { ++revision; model = null; }, open, selectTab, refresh, more, jobs, setCommentDraft, postComment, prepareMerge, confirmMerge, cancelMerge, context };
   }
-  function createPullRequestView({ node, t, boundedText, displayedBody, short, itemStatus, itemDate, avatarFor = () => null, onAuthorButton = () => {}, currentUser = () => null, supportsTextEditor = true, supportsNativeLayout = false, supportsNativeDiff = false, supportsNativeTimeline = false, supportsDetailAside = false }) {
+  function createPullRequestView({ node, t, boundedText, displayedBody, short, itemStatus, itemDate, avatarFor = () => null, onAuthorButton = () => {}, currentUser = () => null, supportsTextEditor = true, supportsNativeLayout = false, supportsNativeDiff = false, supportsNativeTimeline = false, supportsDetailAside = false, now = () => Date.now() }) {
     const text = (value, textStyle = 'caption', tone = 'muted') => node('text', { text: boundedText(String(value ?? ''), 4096, '…'), textStyle, tone });
     const column = children => node('column', {}, children);
     const row = children => node('row', {}, children);
@@ -296,6 +296,16 @@
     const open = (model, label, url, suffix = '', properties = {}) => button(label, openAction(url, prURL(model) + suffix), { symbol: 'arrow.up.forward.square', ...properties });
     const timestamp = entry => entry.submitted_at || entry.created_at || entry.commit?.author?.date || (entry.event === 'committed' ? entry.author?.date : '') || '';
     const date = entry => itemDate({ updated_at: timestamp(entry) || entry.completed_at || entry.started_at || entry.updated_at });
+    const relativeDate = entry => {
+      const created = Date.parse(timestamp(entry)), elapsed = now() - created;
+      if (!Number.isFinite(created) || !Number.isFinite(elapsed)) return '';
+      const seconds = Math.abs(elapsed) / 1000;
+      if (seconds < 60) return t('now', '刚刚');
+      const units = [[31536000, 'y', '年'], [2592000, 'mo', '个月'], [604800, 'w', '周'], [86400, 'd', '天'], [3600, 'h', '小时'], [60, 'm', '分钟']];
+      const [duration, suffix, chinese] = units.find(([duration]) => seconds >= duration);
+      const count = Math.floor(seconds / duration);
+      return elapsed < 0 ? t(`in ${count}${suffix}`, `${count}${chinese}后`) : t(`${count}${suffix}`, `${count}${chinese}前`);
+    };
     const account = (entry, model) => {
       if (entry.event === 'committed') {
         if (typeof entry.author?.login === 'string' && entry.author.login) return entry.author;
@@ -966,10 +976,10 @@
       const cards = entries.slice(-80).map((value, index) => {
         if (!value.entries) return activityRow(value, `pr-activity-${index}`);
         const expanded = model.expandedCommitGroups.has(value.key);
-        const lastDate = date(value.entries.at(-1).entry);
+        const lastDate = relativeDate(value.entries.at(-1).entry);
         const header = nativeRow(t(`${value.entries.length} commits`, `${value.entries.length} 次提交`), '', {
-          id: `pr-commit-group-header-${value.key}`, action: `pr-commits:${value.key}`, symbol: 'arrow.triangle.branch', tone: 'muted',
-        }, [...(lastDate ? [text(lastDate)] : []), node('badge', { text: '', symbol: expanded ? 'chevron.down' : 'chevron.right', tone: 'muted', appearance: 'plain' })]);
+          id: `pr-commit-group-header-${value.key}`, action: `pr-commits:${value.key}`, symbol: 'circle.and.line.horizontal', appearance: 'secondary', tone: 'muted',
+        }, lastDate ? [text(lastDate)] : []);
         const rows = expanded ? value.entries.map((entry, offset) => activityRow(entry, `pr-group-commit-${value.key}-${offset}`)) : [];
         const card = node('column', { id: `pr-commit-group-${value.key}` }, [header, ...rows]);
         if (expanded) commitGroupRows.set(card, { rows });

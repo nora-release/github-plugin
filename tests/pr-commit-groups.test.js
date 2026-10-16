@@ -29,7 +29,7 @@ const view = (changes = {}) => createView({
   boundedText, displayedBody: value => boundedText(value || 'No description.', 63 * 1024, '\nShortened.'),
   short: (value, maximum = 512) => Array.from(String(value ?? '')).slice(0, maximum).join(''),
   itemDate: item => item.updated_at || item.created_at || '', itemStatus: () => ({ text: 'Open', tone: 'success' }),
-  supportsNativeLayout: true, supportsNativeTimeline: true, supportsDetailAside: true,
+  supportsNativeLayout: true, supportsNativeTimeline: true, supportsDetailAside: true, now: () => Date.parse(moment(180)),
   avatarFor: account => `avatar:${account.login}`, ...changes,
 });
 const model = (timeline = []) => ({
@@ -47,11 +47,15 @@ test('Three commits, a comment, and two commits become separate collapsed collec
   const collections = groups(content);
   assert.deepEqual(Array.from(collections, value => value.children[0].text), ['3 commits', '2 commits']);
   assert.ok(collections.every(value => value.children.length === 1));
-  assert.equal(collections[0].children[0].children[0].text, moment(3));
+  assert.equal(collections[0].children[0].children[0].text, '2m');
+  assert.equal(collections[0].children[0].appearance, 'secondary');
+  assert.equal(collections[0].children[0].symbol, 'circle.and.line.horizontal');
+  assert.equal(collections[0].children[0].tone, 'muted');
+  assert.ok(!nodes(collections[0]).some(value => value.symbol?.startsWith('chevron')));
   assert.ok(api.toggleCommitGroup(current, groupKey(collections[0])));
   const expanded = groups(api.nativeContent(current))[0];
   assert.equal(expanded.children.length, 4);
-  assert.equal(expanded.children[0].children.at(-1).symbol, 'chevron.down');
+  assert.ok(!nodes(expanded.children[0]).some(value => value.symbol?.startsWith('chevron')));
   for (let index = 1; index <= 3; index++) {
     const row = expanded.children[index];
     assert.equal(row.type, 'timelineItem'); assert.equal(row.value, 'event');
@@ -62,6 +66,26 @@ test('Three commits, a comment, and two commits become separate collapsed collec
   }
   assert.ok(api.toggleCommitGroup(current, groupKey(expanded)));
   assert.equal(groups(api.nativeContent(current))[0].children.length, 1);
+});
+
+test('Collection dates are compact, localized and relative while individual commit dates remain complete', () => {
+  const fixed = Date.UTC(2026, 9, 16, 12);
+  for (const [seconds, english, chinese] of [[20, 'now', '刚刚'], [480, '8m', '8分钟前'], [28800, '8h', '8小时前'], [518400, '6d', '6天前'],
+    [1814400, '3w', '3周前'], [20736000, '8mo', '8个月前'], [63072000, '2y', '2年前'], [-7200, 'in 2h', '2小时后']]) {
+    const created = new Date(fixed - seconds * 1000).toISOString();
+    const current = model([commit(1, { author: { login: 'first', date: created } }), commit(2, { author: { login: 'last', date: created } })]);
+    for (const [locale, expected] of [['en', english], ['zh', chinese]]) {
+      const api = view({ now: () => fixed, t: (en, zh) => locale === 'zh' ? zh : en });
+      const collection = groups(api.nativeContent(current))[0];
+      assert.equal(collection.children[0].children[0].text, expected);
+      api.toggleCommitGroup(current, groupKey(collection));
+      const expanded = groups(api.nativeContent(current))[0];
+      assert.ok(nodes(expanded.children[1]).some(value => value.type === 'text' && value.text === created));
+      api.toggleCommitGroup(current, groupKey(collection));
+    }
+  }
+  const bad = model([commit(1, { author: { login: 'first' } }), commit(2, { author: { login: 'last' } })]);
+  assert.equal(groups(view({ now: () => fixed }).nativeContent(bad))[0].children[0].children.length, 0, 'Unknown dates remain omitted');
 });
 
 test('Reviews, non-commit events, malformed commits and a single commit remain real collection boundaries', () => {
