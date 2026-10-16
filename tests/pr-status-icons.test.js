@@ -9,7 +9,21 @@ const expectedIcons = {
 };
 const basics = url => url.pathname === '/user' ? body({ login: 'alice' }) : url.pathname === '/user/repos' ? body([]) : null;
 const pull = (number, extra = {}) => issue(number, `PR ${number}`, { pull_request: {}, ...extra });
-const detailBadge = view => view.children[1].children[0].children.find(node => node.type === 'badge');
+const detailHeading = view => view.children[1].children[1].children[0];
+const detailBadge = view => detailHeading(view).children[0];
+function assertHeading(view, item, kind, label) {
+  const detail = view.children[1], heading = detailHeading(view);
+  assert.equal(heading.type, 'row');
+  assert.deepEqual(Array.from(heading.children, node => node.type), ['badge', 'text', 'text']);
+  assert.equal(heading.children[0].text, label);
+  assert.equal(heading.children[1].text, item.title);
+  assert.equal(heading.children[1].textStyle, 'title');
+  assert.equal(heading.children[2].text, `#${item.number}`);
+  assert.equal(heading.children[2].textStyle, 'caption');
+  assert.ok(!nodes(detail.children[0]).some(node => node.type === 'badge'));
+  assert.equal(detail.children[0].children[0].text, `alice/project / ${kind} #${item.number}`);
+  assert.ok(heading.children.every(node => !node.action));
+}
 
 for (const [kind, extra, label, tone, symbol] of [
   ['open', {}, 'Open', 'success', 'arrow.triangle.pull'],
@@ -22,6 +36,7 @@ for (const [kind, extra, label, tone, symbol] of [
     await f.renderReady({});
     const overview = await f.render({ action: 'kind:pulls' });
     const selected = await f.render({ action: 'item:item-alice/project/7' });
+    assertHeading(selected, item, 'PR', label);
     for (const badge of [overview.children[0].items[0].children[0], selected.children[0].items[0].children[0], detailBadge(selected)]) {
       assert.equal(badge.type, 'badge');
       assert.equal(badge.iconSVG, expectedIcons[kind]);
@@ -40,6 +55,7 @@ test('Merged PRs retain their merge symbol and take precedence over closed or dr
     await f.renderReady({});
     await f.render({ action: 'kind:pulls' });
     const selected = await f.render({ action: 'item:item-alice/project/7' });
+    assertHeading(selected, item, 'PR', 'Merged');
     for (const badge of [selected.children[0].items[0].children[0], detailBadge(selected)]) {
       assert.equal(badge.text, 'Merged');
       assert.equal(badge.tone, 'accent');
@@ -55,6 +71,7 @@ test('Issue badges retain their semantic circles without any PR SVG', async () =
     const f = fixture({ saved: connection, route: async url => basics(url) || body(url.pathname === '/issues' ? [item] : item) });
     const overview = await f.renderReady({});
     const selected = await f.render({ action: 'item:item-alice/project/7' });
+    assertHeading(selected, item, 'Issue', state === 'open' ? 'Open' : 'Closed');
     for (const badge of [overview.children[0].items[0].children[0], detailBadge(selected)]) {
       assert.equal(badge.iconSVG, undefined);
       assert.equal(badge.symbol, symbol);
@@ -75,6 +92,44 @@ test('A full draft PR detail updates the sidebar from the open SVG to the draft 
   assert.equal(selected.children[0].items[0].children[0].iconSVG, expectedIcons.draft);
   assert.equal(detailBadge(selected).iconSVG, expectedIcons.draft);
   assert.equal(selected.children[0].items[0].id, overview.children[0].items[0].id);
+});
+
+test('Long Unicode PR and Issue titles stay bounded while their status and number remain separate', async () => {
+  for (const kind of ['issues', 'pulls']) {
+    const item = issue(987654, '修复 🧑🏽‍💻 editor selection '.repeat(800), kind === 'pulls' ? { pull_request: {} } : {});
+    const f = fixture({ saved: connection, route: async url => basics(url) || body(url.pathname === '/issues' ? [item] : item) });
+    await f.renderReady({});
+    if (kind === 'pulls') await f.render({ action: 'kind:pulls' });
+    const selected = await f.render({ action: 'item:item-alice/project/987654' });
+    const heading = detailHeading(selected), [status, title, number] = heading.children;
+    assert.equal(heading.type, 'row');
+    assert.equal(status.text, 'Open');
+    assert.equal(number.text, '#987654');
+    assert.equal(number.textStyle, 'caption');
+    assert.ok(Buffer.byteLength(title.text, 'utf8') <= 8192);
+    assert.ok(title.text.endsWith('…'));
+    assert.ok(!/[\ud800-\udbff]$/.test(title.text.slice(0, -1)));
+    assert.equal(nodes(selected.children[1]).filter(node => node.textStyle === 'title').length, 1);
+    assert.equal(f.writes.length, 0);
+    assert.deepEqual(f.drafts, []);
+  }
+});
+
+test('Hosts without native detail support retain the previous standalone title and toolbar state', async () => {
+  for (const kind of ['issues', 'pulls']) {
+    const item = issue(42, 'Keep the original compatible layout', kind === 'pulls' ? { pull_request: {}, draft: true } : {});
+    const f = fixture({ saved: connection, unavailableViewKinds: ['detail'],
+      route: async url => basics(url) || body(url.pathname === '/issues' ? [item] : item) });
+    await f.renderReady({});
+    if (kind === 'pulls') await f.render({ action: 'kind:pulls' });
+    const selected = await f.render({ action: 'item:item-alice/project/42' }), detail = selected.children[1];
+    assert.equal(detail.type, 'column');
+    assert.equal(detail.children[1].children[0].type, 'text');
+    assert.equal(detail.children[1].children[0].text, item.title);
+    assert.equal(detail.children[1].children[0].textStyle, 'title');
+    assert.equal(detail.children[0].children.find(node => node.type === 'badge').text, kind === 'pulls' ? 'Draft' : 'Open');
+    assert.ok(!detail.children[1].children.some(node => node.text === '#42'));
+  }
 });
 
 test('Paginated PR SVG badges stay inside Swift encoded view and node limits', async () => {

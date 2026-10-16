@@ -1918,12 +1918,14 @@
     const item = state.selected, status = itemStatus(item), date = itemDate(item);
     if (pullView.supportsNativeLayout && (state.kind === 'issues' || pullDetails.current)) {
       const isPR = state.kind === 'pulls', model = isPR ? pullDetails.current : { item, repo: itemRepository(item), number: item.number };
-      const toolbar = node('toolbar', {}, [styledText(`${itemRepository(item)} / ${isPR ? 'PR' : 'Issue'} #${item.number}`, 'caption'), node('badge', status), node('spacer'),
+      const toolbar = node('toolbar', {}, [styledText(`${itemRepository(item)} / ${isPR ? 'PR' : 'Issue'} #${item.number}`, 'caption'), node('spacer'),
         button(t('Hand to Nora', '交给 Nora'), 'handoff-item', state.detailLoading || !!state.detailError, { appearance: 'primary', symbol: 'sparkles' }),
         button(message.refresh, 'refresh-detail', state.detailLoading, { appearance: 'icon', symbol: 'arrow.clockwise' }),
         button(t('View on GitHub', '在 GitHub 查看'), 'open-item', false, { appearance: 'icon', symbol: 'arrow.up.forward.square' }),
         button(t('Close details', '关闭详情'), 'close-detail', false, { appearance: 'icon', symbol: 'xmark' })]);
-      const summary = column([styledText(boundedText(String(item.title || ''), 8192, '…'), 'title', 'neutral'),
+      const summary = column([row([node('badge', status),
+        styledText(boundedText(String(item.title || ''), 8192, '…'), 'title', 'neutral'),
+        styledText(`#${item.number}`, 'caption')]),
         ...(isPR ? pullView.nativeSummary(model) : [])]);
       const body = state.detailLoading ? [node('progress', { text: t('Loading details…', '正在加载详情…') })]
         : state.detailError ? [node('badge', { text: short(state.detailError, 512), tone: 'danger' }), button(t('Retry details', '重试详情'), 'retry-detail')]
