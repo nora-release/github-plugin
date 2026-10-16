@@ -11,7 +11,8 @@ test('Issues use the same fixed native detail structure and preserve read-only a
   assert.equal(detail.type, 'detail');
   assert.deepEqual(Array.from(detail.children.slice(0, 3), value => value.type), ['toolbar', 'column', 'tabBar']);
   const description = nodes(detail).find(value => value.id === 'issue-description');
-  assert.equal(description.appearance, 'secondary');
+  assert.equal(description.type, 'timelineItem');
+  assert.equal(description.value, 'comment');
   assert.ok(nodes(description).some(value => value.type === 'markdown' && value.text === 'Description'));
   assert.ok(nodes(detail.children[0]).some(value => value.action === 'handoff-item'));
   for (const action of ['refresh-detail', 'open-item', 'close-detail']) assert.ok(nodes(detail).some(value => value.action === action));
@@ -28,6 +29,18 @@ test('Older Nora hosts retain the compatible Issue description without unsupport
   assert.ok(nodes(selected).some(value => value.type === 'markdown' && value.text === 'Description'));
   assert.ok(nodes(selected).some(value => value.action === 'handoff-item'));
   assert.ok(!nodes(selected).some(value => value.type === 'detail'));
+});
+
+test('Hosts without timeline layout retain the existing author and complete Issue body', async () => {
+  const f = fixture({ saved: connection, unavailableViewKinds: ['timelineItem'] });
+  await f.renderReady({});
+  const selected = await f.render({ action: 'item:item-alice/project/1' });
+  assert.ok(!nodes(selected).some(value => value.type === 'timelineItem'));
+  const description = nodes(selected).find(value => value.id === 'issue-description');
+  assert.equal(description.type, 'column');
+  assert.equal(description.appearance, 'secondary');
+  assert.ok(nodes(description).some(value => value.type === 'button' && value.text === 'alice'));
+  assert.ok(nodes(description).some(value => value.type === 'markdown' && value.text === 'Description'));
 });
 
 test('Connecting GitHub has one main action and keeps the token form optional', async () => {

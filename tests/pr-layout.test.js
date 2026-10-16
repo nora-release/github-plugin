@@ -282,6 +282,41 @@ test('Native discussion distinguishes messages from activity without repeating g
   assert.ok(nodes.some(value => value.action === 'pr-comment'));
 });
 
+test('The conversation shares one avatar gutter while retaining complete messages actions and the current user draft', () => {
+  const current = model(); current.tab = 'discussion';
+  current.item.user = { login: 'writer', html_url: 'https://github.com/writer' };
+  current.sections.comments = section([{ id: 8, user: { login: 'reviewer' }, body: 'Keep every paragraph.\n\nIncluding the last one.', html_url: 'https://github.com/owner/repo/pull/1#issuecomment-8' }]);
+  current.sections.timeline = section([{ event: 'committed', sha: headSHA, author: { name: 'Git Name', date: '2026-10-15T00:00:00Z' } }]);
+  current.sections.commits = section([{ sha: headSHA, author: { login: 'committer' }, commit: { message: 'Keep the real commit title' } }]);
+  current.comment.draft = 'An unfinished review.';
+  const tracked = new WeakSet();
+  const api = view('en', { supportsNativeLayout: true, supportsNativeTimeline: true, currentUser: () => ({ login: 'viewer' }),
+    avatarFor: () => 'encoded-image', onAuthorButton: button => tracked.add(button) });
+  const content = api.nativeContent(current), conversation = content.find(value => value.id === 'pr-conversation');
+  assert.ok(conversation.children.every(value => value.type === 'timelineItem'));
+  for (const entry of conversation.children) {
+    assert.equal(entry.children[0].type, 'button');
+    assert.equal(entry.children[0].avatarBase64, 'encoded-image');
+    assert.ok(tracked.has(entry.children[0]), 'The original author control remains available to the image loader');
+    assert.equal(entry.children[1].type, 'row');
+    assert.ok(!flatten(entry.children.slice(1)).some(value => value.avatarBase64), 'The header must not repeat the avatar');
+    assert.equal(entry.appearance, undefined, 'Conversation items have no nested card frame');
+  }
+  const nodes = flatten(content);
+  assert.ok(nodes.some(value => value.type === 'markdown' && value.text === 'Keep every paragraph.\n\nIncluding the last one.'));
+  assert.ok(nodes.some(value => value.text === 'Keep the real commit title'));
+  assert.ok(nodes.some(value => value.action?.includes('issuecomment-8')));
+  const composer = content.find(value => value.id === 'pr-comment-composer');
+  assert.equal(composer.type, 'timelineItem');
+  assert.equal(composer.children[0].text, 'viewer');
+  assert.equal(nodes.find(value => value.type === 'textEditor').value, 'An unfinished review.');
+  assert.ok(nodes.some(value => value.action === 'pr-comment'));
+  const readiness = content.find(value => value.id === 'pr-readiness');
+  assert.equal(readiness.appearance, undefined);
+  assert.equal(readiness.children[0].type, 'divider');
+  assert.ok(content.indexOf(readiness) < content.indexOf(composer), 'Readiness and loading notices must remain ahead of the comment composer');
+});
+
 test('Native incomplete or unknown results cannot show a successful readiness indicator', () => {
   const current = model(); current.tab = 'discussion';
   const api = view('en', { supportsNativeLayout: true });

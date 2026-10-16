@@ -704,7 +704,8 @@ test('A selected PR has one detail header and a complete Markdown description be
   assert.equal(title.text, 'Keep the editor selection when switching pages');
   assert.ok(!nodes(detail.children[0]).includes(title));
   const description = nodes(detail).find(node => node.id === 'pr-description');
-  assert.equal(description.appearance, 'secondary');
+  assert.equal(description.type, 'timelineItem');
+  assert.equal(description.value, 'comment');
   assert.match(texts(description), /bob\nopened Oct 10\nnative · reviewed/);
   assert.ok(!nodes(detail.children[1]).some(node => node.text === 'bob'), 'The fixed heading must not repeat the description author');
   assert.equal(nodes(detail).find(node => node.type === 'markdown').text, '## Changes\nPreserve the selection.\n\n- Keep keyboard focus.');

@@ -272,7 +272,7 @@
     }
     return { get current() { return model; }, reset() { ++revision; model = null; }, open, selectTab, refresh, more, jobs, setCommentDraft, postComment, prepareMerge, confirmMerge, cancelMerge, context };
   }
-  function createPullRequestView({ node, t, boundedText, displayedBody, short, itemStatus, itemDate, avatarFor = () => null, onAuthorButton = () => {}, supportsTextEditor = true, supportsNativeLayout = false, supportsNativeDiff = false }) {
+  function createPullRequestView({ node, t, boundedText, displayedBody, short, itemStatus, itemDate, avatarFor = () => null, onAuthorButton = () => {}, currentUser = () => null, supportsTextEditor = true, supportsNativeLayout = false, supportsNativeDiff = false, supportsNativeTimeline = false }) {
     const text = (value, textStyle = 'caption', tone = 'muted') => node('text', { text: boundedText(String(value ?? ''), 4096, '…'), textStyle, tone });
     const column = children => node('column', {}, children);
     const row = children => node('row', {}, children);
@@ -329,10 +329,10 @@
       };
       return bytes(JSON.stringify(value.map(normalize)).replace(/\//g, '\\/'));
     };
-    const fit = (model, header, cards, footer, suffix, preferRecent = false) => {
+    const fit = (model, header, cards, footer, suffix, preferRecent = false, reservedNodes = 0) => {
       const overflow = [badge(t('More activity is available on GitHub.', '还有更多内容，可在 GitHub 查看。'), 'muted'), open(model, t('View complete history', '查看完整内容'), prURL(model) + suffix, suffix)];
       const fixed = [...header, ...footer, ...overflow];
-      let nodes = fixed.reduce((sum, value) => sum + countNodes(value), 0), size = encodedSize(fixed);
+      let nodes = reservedNodes + fixed.reduce((sum, value) => sum + countNodes(value), 0), size = encodedSize(fixed);
       const kept = [];
       for (const card of preferRecent ? cards.slice().reverse() : cards) {
         const nextNodes = countNodes(card), nextSize = encodedSize([card]);
@@ -688,18 +688,24 @@
       const reviewLabel = requested ? t('Changes requested', '有审查要求修改') : approvals ? t(`${approvals} ${approvals === 1 ? 'approval' : 'approvals'}`, `${approvals} 人批准`)
         : items(model, 'reviews').length ? t('Awaiting approval', '尚未批准') : t('No reviews yet', '暂无审查');
       const merge = mergeState(model.item || {});
-      return node('column', { id: 'pr-readiness', appearance: 'secondary' }, [
+      return node('column', { id: 'pr-readiness', ...(!supportsNativeTimeline ? { appearance: 'secondary' } : {}) }, [
+        ...(supportsNativeTimeline ? [node('divider')] : []),
         nativeRow(incomplete ? t(`${checkLabel} · partial results`, `${checkLabel} · 信息不完整`) : checkLabel,
-          incomplete ? t('Some results could not be loaded. Open Checks for details.', '部分结果尚未获取，点击检查查看详情。') : t('View checks and workflow runs', '查看检查与工作流记录'),
+          incomplete ? t('Some results could not be loaded. Open Checks for details.', '部分结果尚未获取，点击检查查看详情。') : supportsNativeTimeline ? '' : t('View checks and workflow runs', '查看检查与工作流记录'),
           { action: 'pr-tab:checks', symbol: failed ? 'xmark.circle' : pending || incomplete ? 'clock' : allSuccessful ? 'checkmark.circle' : 'checklist', tone: checkTone }),
         nativeRow(reviewsIncomplete ? t(`${reviewLabel} · partial results`, `${reviewLabel} · 信息不完整`) : reviewLabel,
           reviews.error ? short(reviews.error, 256) : '', { symbol: 'person.crop.circle.badge.checkmark', tone: requested ? 'danger' : reviewsIncomplete ? 'warning' : approvals ? 'success' : 'muted' }),
-        nativeRow(merge.text, t('Review merge options', '查看合并选项'), { action: 'pr-toggle-merge', symbol: merge.symbol, tone: merge.tone }),
+        nativeRow(merge.text, supportsNativeTimeline ? '' : t('Review merge options', '查看合并选项'), { action: 'pr-toggle-merge', symbol: merge.symbol, tone: merge.tone }),
       ]);
     }
     function nativeDescription(model, sourceURL = prURL(model), id = 'pr-description') {
       const labels = (Array.isArray(model.item?.labels) ? model.item.labels : []).map(label => typeof label === 'string' ? label : label?.name).filter(label => typeof label === 'string' && label);
       const created = date(model.item || {});
+      if (supportsNativeTimeline) return node('timelineItem', { id, value: 'comment' }, [
+        authorButton(model, model.item || {}, sourceURL),
+        row([...(created ? [text(t(`opened ${created}`, `创建于 ${created}`))] : []), node('spacer')]),
+        column([...(labels.length ? [text(labels.join(' · '))] : []), node('markdown', { text: displayedBody(model.item?.body) })]),
+      ]);
       return node('column', { id, appearance: 'secondary' }, [
         row([authorButton(model, model.item || {}, sourceURL), ...(created ? [text(t(`opened ${created}`, `创建于 ${created}`))] : []), node('spacer')]),
         ...(labels.length ? [text(labels.join(' · '))] : []),
@@ -707,6 +713,7 @@
       ]);
     }
     function nativeDiscussion(model) {
+      if (supportsNativeTimeline) return timelineDiscussion(model);
       const { sources, activity } = discussionActivity(model);
       const description = nativeDescription(model);
       const cards = activity.slice(-80).map(({ source, entry }, index) => {
@@ -748,15 +755,59 @@
       footer.push(nativeReadiness(model), ...nativeCommentComposer(model));
       return fit(model, [description], groupedCards, footer, '', true);
     }
+    function timelineDiscussion(model) {
+      const { sources, activity } = discussionActivity(model);
+      const cards = activity.slice(-80).map(({ source, entry }, index) => {
+        const event = source === 'timeline', created = date(entry), metadata = [], body = [];
+        if (event) {
+          const sha = entry.sha || entry.commit_id;
+          const commit = /^[a-f\d]{40}$/i.test(sha || '') ? items(model, 'commits').find(value => value.sha?.toLowerCase() === sha.toLowerCase()) : null;
+          const message = entry.event === 'committed' ? String(commit?.commit?.message || entry.message || '').split('\n')[0] : '';
+          metadata.push(text(message ? short(message, 160) : eventLabel(entry)), node('spacer'));
+          if (sha) {
+            const url = /^[a-f\d]{40}$/i.test(sha) ? `https://github.com/${model.repo}/commit/${sha}` : prURL(model) + '/commits';
+            metadata.push(button(short(sha, 8), openAction(url, prURL(model) + '/commits')));
+          }
+          if (created) metadata.push(text(created));
+          if (entry.dismissed_review?.dismissal_message) body.push(markdown(entry.dismissed_review.dismissal_message, 2048));
+        } else {
+          if (created) metadata.push(text(created));
+          if (source === 'reviews') metadata.push(reviewState(entry.state));
+          metadata.push(node('spacer'), open(model, t('View comment on GitHub', '在 GitHub 查看留言'), entry.html_url, '', { appearance: 'icon' }));
+          if (source === 'reviewComments') body.push(text([entry.path, Number.isInteger(entry.line || entry.original_line) ? t(`line ${entry.line || entry.original_line}`, `第 ${entry.line || entry.original_line} 行`) : '', entry.in_reply_to_id ? t(`Reply to #${entry.in_reply_to_id}`, `回复 #${entry.in_reply_to_id}`) : ''].filter(Boolean).join(' · '), 'monospaced'));
+          if (entry.body) body.push(markdown(entry.body, 6 * 1024));
+          else if (source === 'reviews') body.push(text(t('Review submitted without a message.', '已提交审查，没有附加留言。')));
+        }
+        return node('timelineItem', { id: `pr-activity-${index}`, value: event ? 'event' : 'comment' }, [
+          authorButton(model, entry, prURL(model)), row(metadata), ...(body.length ? [column(body)] : []),
+        ]);
+      });
+      const footer = sources.flatMap(([name, label]) => sectionState(model, name, label));
+      if (activity.length > 80) footer.push(text(t('Showing part of the loaded history. View the full conversation on GitHub.', '这里只显示部分已加载记录，完整讨论可在 GitHub 查看。')));
+      footer.push(nativeReadiness(model), ...nativeCommentComposer(model));
+      const fitted = fit(model, [nativeDescription(model)], cards, footer, '', true, 1);
+      const end = fitted.findIndex(value => value.type !== 'timelineItem' || value.id === 'pr-comment-composer');
+      const threadEnd = end < 0 ? fitted.length : end;
+      return [node('column', { id: 'pr-conversation' }, fitted.slice(0, threadEnd)), ...fitted.slice(threadEnd)];
+    }
     function nativeCommentComposer(model) {
       const children = commentActions(model).filter(value => value.type !== 'divider');
       if (!children.length) return [];
+      if (supportsNativeTimeline) return [node('timelineItem', { id: 'pr-comment-composer', value: 'comment' }, [
+        authorButton(model, { user: currentUser() || {} }, prURL(model)), row([text(t('Leave a comment', '留言')), node('spacer')]),
+        column(children.filter(value => !(value.type === 'text' && value.textStyle === 'headline'))),
+      ])];
       return [node('column', { id: 'pr-comment-composer', appearance: 'secondary' }, children)];
     }
     function nativeCommits(model) {
       const list = items(model, 'commits');
       const cards = list.slice(0, 80).map((commit, index) => {
         const message = String(commit.commit?.message || ''), lines = message.split('\n');
+        if (supportsNativeTimeline) return node('timelineItem', { id: `pr-commit-${index}`, value: 'comment' }, [
+          authorButton(model, commit, prURL(model) + '/commits'), row([text(date(commit)), node('spacer'), open(model, short(commit.sha, 8), commit.html_url, '/commits', { symbol: undefined })]),
+          column([open(model, boundedText(lines[0] || t('Commit', '提交'), 512, '…'), commit.html_url, '/commits', { tone: 'neutral', symbol: undefined }),
+            ...(lines.slice(1).join('\n').trim() ? [markdown(lines.slice(1).join('\n').trim(), 2048)] : [])]),
+        ]);
         return node('column', { id: `pr-commit-${index}`, appearance: 'plain' }, [
           open(model, boundedText(lines[0] || t('Commit', '提交'), 512, '…'), commit.html_url, '/commits', { tone: 'neutral' }),
           row([authorButton(model, commit, prURL(model) + '/commits'), text(date(commit)), node('spacer'), open(model, short(commit.sha, 8), commit.html_url, '/commits')]),
@@ -1813,6 +1864,8 @@
       source: participantSource(account), unlinkedCommit: !account.login && entry.event === 'committed' && /^[a-f\d]{40}$/i.test(entry.sha || '') &&
         !pullDetails.current?.sections.commits.items.some(commit => commit.sha?.toLowerCase() === entry.sha.toLowerCase()),
     }),
+    currentUser: () => state.user,
+    supportsNativeTimeline: typeof nora.ui.timelineItem === 'function',
     supportsTextEditor: typeof nora.ui.textEditor === 'function', supportsNativeDiff: typeof nora.ui.diff === 'function',
     supportsNativeLayout: ['detail', 'tabBar', 'splitView', 'itemRow'].every(kind => typeof nora.ui[kind] === 'function') });
   nora.registerPanel(panelID, async (event = {}) => {
