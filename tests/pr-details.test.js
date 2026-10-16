@@ -508,7 +508,8 @@ test('Native PR reading controls preserve the draft across jobs, sources and mer
   assert.equal(detail.type, 'detail');
   assert.deepEqual(Array.from(detail.children.slice(0, 3), value => value.type), ['toolbar', 'column', 'tabBar']);
   assert.ok(nodes(detail.children[0]).some(value => value.action === 'handoff-item'));
-  assert.ok(nodes(detail.children[0]).some(value => value.action === 'pr-toggle-merge'));
+  assert.ok(!nodes(detail.children[0]).some(value => value.action === 'pr-toggle-merge'));
+  assert.ok(nodes(detail).some(value => value.id === 'pr-readiness' && nodes(value).some(child => child.action === 'pr-toggle-merge')));
   assert.ok(!nodes(detail).some(value => value.action?.startsWith('pr-merge:')));
   const editor = nodes(detail).find(value => value.type === 'textEditor');
   const draft = 'Preserve this native draft\nwhile reading CI.';

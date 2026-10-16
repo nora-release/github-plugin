@@ -688,6 +688,16 @@
       const reviewLabel = requested ? t('Changes requested', '有审查要求修改') : approvals ? t(`${approvals} ${approvals === 1 ? 'approval' : 'approvals'}`, `${approvals} 人批准`)
         : items(model, 'reviews').length ? t('Awaiting approval', '尚未批准') : t('No reviews yet', '暂无审查');
       const merge = mergeState(model.item || {});
+      if (supportsNativeTimeline) return node('column', { id: 'pr-readiness' }, [
+        node('divider'), row([
+          button(incomplete ? t(`${checkLabel} · partial`, `${checkLabel} · 信息不完整`) : checkLabel, 'pr-tab:checks',
+            { symbol: failed ? 'xmark.circle' : pending || incomplete ? 'clock' : allSuccessful ? 'checkmark.circle' : 'checklist', tone: checkTone }),
+          node('badge', { text: reviewsIncomplete ? t(`${reviewLabel} · partial`, `${reviewLabel} · 信息不完整`) : reviewLabel,
+            symbol: 'person.crop.circle.badge.checkmark', appearance: 'plain', tone: requested ? 'danger' : reviewsIncomplete ? 'warning' : 'muted' }),
+          node('spacer'), button(merge.text, 'pr-toggle-merge', { symbol: merge.symbol, tone: merge.tone }),
+        ]),
+        ...(reviews.error ? [text(short(reviews.error, 256), 'caption', 'warning')] : []),
+      ]);
       return node('column', { id: 'pr-readiness', ...(!supportsNativeTimeline ? { appearance: 'secondary' } : {}) }, [
         ...(supportsNativeTimeline ? [node('divider')] : []),
         nativeRow(incomplete ? t(`${checkLabel} · partial results`, `${checkLabel} · 信息不完整`) : checkLabel,
@@ -756,6 +766,27 @@
       return fit(model, [description], groupedCards, footer, '', true);
     }
     function timelineDiscussion(model) {
+      const commentBody = (source, entry) => {
+        const body = String(entry.body || '');
+        const isBot = entry.user?.type === 'Bot' || /^[a-z\d][a-z\d-]*\[bot\]$/i.test(entry.user?.login || '');
+        const tableDivider = /^[ \t]*\|?[ \t]*:?-{3,}:?[ \t]*(?:\|[ \t]*:?-{3,}:?[ \t]*)+\|?[ \t]*$/m;
+        const complex = /(?:^|\n)[ \t]{0,3}(?:`{3,}|~{3,}|\|)|(?:^|\n)[ \t]{4}\S|<(?:table|details|pre)\b/i.test(body) || tableDivider.test(body);
+        if (source !== 'comments' || !isBot || Array.from(body).length <= 200 && !complex) return [markdown(body, 6 * 1024)];
+        // Keep the first HTML pass from interpreting user tags or extracting code before the body is decoded and parsed as Markdown.
+        const entities = { '&': '&amp;', '<': '&lt;', '>': '&gt;', '`': '&#96;', '~': '&#126;', '\r': '&#13;', '\n': '&#10;' };
+        const encoded = body.replace(/[&<>`~\r\n]/g, character => entities[character]);
+        const collapsed = `<details><summary>${t('View full comment', '查看完整留言')}</summary>${encoded}</details>`;
+        if (bytes(collapsed) > 64 * 1024) return [markdown(body, 6 * 1024)];
+        const firstSourceBlock = body.replace(/^(?:[ \t]*(?:\r?\n|<!--[\s\S]*?-->))+/, '').split(/\r?\n[ \t]*\r?\n/)[0];
+        const firstBlock = firstSourceBlock.trim();
+        const heading = /^(?:#{1,6})[ \t]+([^\r\n]+?)(?:[ \t]+#+)?$/.exec(firstBlock.split(/\r?\n/)[0]);
+        const summary = heading ? heading[1] : firstBlock;
+        const suitable = summary && !/^(?: {4}|\t)/.test(firstSourceBlock) && Array.from(summary).length <= 280 && bytes(summary) <= 1024
+          && !/^(?:[ \t]*[<|>#`~]|[ \t]*[-*+]\s|[ \t]*\d+[.)]\s|!?\[[^\]]*\](?:\[[^\]]*\]|:))/.test(summary)
+          && !/^!\[[^\]]*\]\(/.test(summary) && !tableDivider.test(summary)
+          && !/<(?:details|summary|table|pre|script)\b|<\//i.test(summary);
+        return [...(suitable ? [markdown(summary, 1024)] : []), node('markdown', { text: collapsed })];
+      };
       const { sources, activity } = discussionActivity(model);
       const cards = activity.slice(-80).map(({ source, entry }, index) => {
         const event = source === 'timeline', created = date(entry), metadata = [], body = [];
@@ -775,7 +806,7 @@
           if (source === 'reviews') metadata.push(reviewState(entry.state));
           metadata.push(node('spacer'), open(model, t('View comment on GitHub', '在 GitHub 查看留言'), entry.html_url, '', { appearance: 'icon' }));
           if (source === 'reviewComments') body.push(text([entry.path, Number.isInteger(entry.line || entry.original_line) ? t(`line ${entry.line || entry.original_line}`, `第 ${entry.line || entry.original_line} 行`) : '', entry.in_reply_to_id ? t(`Reply to #${entry.in_reply_to_id}`, `回复 #${entry.in_reply_to_id}`) : ''].filter(Boolean).join(' · '), 'monospaced'));
-          if (entry.body) body.push(markdown(entry.body, 6 * 1024));
+          if (entry.body) body.push(...commentBody(source, entry));
           else if (source === 'reviews') body.push(text(t('Review submitted without a message.', '已提交审查，没有附加留言。')));
         }
         return node('timelineItem', { id: `pr-activity-${index}`, value: event ? 'event' : 'comment' }, [
@@ -1713,7 +1744,6 @@
       const isPR = state.kind === 'pulls', model = isPR ? pullDetails.current : { item, repo: itemRepository(item), number: item.number };
       const toolbar = node('toolbar', {}, [styledText(`${itemRepository(item)} / ${isPR ? 'PR' : 'Issue'} #${item.number}`, 'caption'), node('badge', status), node('spacer'),
         button(t('Hand to Nora', '交给 Nora'), 'handoff-item', state.detailLoading || !!state.detailError, { appearance: 'primary', symbol: 'sparkles' }),
-        ...(isPR ? [button(t('Merge…', '合并…'), 'pr-toggle-merge', !!model.merge?.busy, { appearance: 'plain', symbol: 'arrow.triangle.merge', value: model.mergeExpanded || model.merge?.pending ? 'selected' : '' })] : []),
         button(message.refresh, 'refresh-detail', state.detailLoading, { appearance: 'icon', symbol: 'arrow.clockwise' }),
         button(t('View on GitHub', '在 GitHub 查看'), 'open-item', false, { appearance: 'icon', symbol: 'arrow.up.forward.square' }),
         button(t('Close details', '关闭详情'), 'close-detail', false, { appearance: 'icon', symbol: 'xmark' })]);
