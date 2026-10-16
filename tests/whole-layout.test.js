@@ -15,10 +15,17 @@ test('Issues use the same fixed native detail structure and preserve read-only a
   assert.equal(description.value, 'comment');
   assert.ok(nodes(description).some(value => value.type === 'markdown' && value.text === 'Description'));
   assert.ok(nodes(detail.children[0]).some(value => value.action === 'handoff-item'));
-  for (const action of ['refresh-detail', 'open-item', 'close-detail']) assert.ok(nodes(detail).some(value => value.action === action));
+  for (const action of ['refresh-detail', 'open-item']) assert.ok(nodes(detail).some(value => value.action === action));
+  assert.ok(!nodes(detail.children[0]).some(value => value.action === 'close-detail' || value.symbol === 'xmark'));
+  assert.equal(selected.action, 'close-detail');
+  assert.equal(selected.value, 'item-alice/project/1');
   assert.ok(!nodes(detail).some(value => value.type === 'textEditor' || /^(pr-comment|pr-toggle-merge|pr-merge:|pr-confirm-merge)/.test(value.action || '')));
   assert.ok(f.requests.every(request => !request.method || request.method === 'GET'));
   assert.equal(f.writes.length, 0);
+  const closed = await f.render({ action: selected.action });
+  assert.equal(closed.value, '');
+  assert.equal(closed.children[0].value, '');
+  assert.ok(!nodes(closed).some(value => value.id === 'item-details'));
 });
 
 test('Older Nora hosts retain the compatible Issue description without unsupported detail views', async () => {
@@ -28,6 +35,7 @@ test('Older Nora hosts retain the compatible Issue description without unsupport
   assert.equal(selected.children[1].type, 'column');
   assert.ok(nodes(selected).some(value => value.type === 'markdown' && value.text === 'Description'));
   assert.ok(nodes(selected).some(value => value.action === 'handoff-item'));
+  assert.ok(nodes(selected.children[1].children[0]).some(value => value.action === 'close-detail' && value.symbol === 'xmark'));
   assert.ok(!nodes(selected).some(value => value.type === 'detail'));
 });
 

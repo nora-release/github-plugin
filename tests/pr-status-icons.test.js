@@ -22,6 +22,8 @@ function assertHeading(view, item, kind, label) {
   assert.equal(heading.children[2].textStyle, 'caption');
   assert.ok(!nodes(detail.children[0]).some(node => node.type === 'badge'));
   assert.equal(detail.children[0].children[0].text, `alice/project / ${kind} #${item.number}`);
+  assert.ok(!nodes(detail.children[0]).some(node => node.action === 'close-detail' || node.symbol === 'xmark'));
+  assert.equal(view.action, 'close-detail');
   assert.ok(heading.children.every(node => !node.action));
 }
 

@@ -1921,8 +1921,7 @@
       const toolbar = node('toolbar', {}, [styledText(`${itemRepository(item)} / ${isPR ? 'PR' : 'Issue'} #${item.number}`, 'caption'), node('spacer'),
         button(t('Hand to Nora', '交给 Nora'), 'handoff-item', state.detailLoading || !!state.detailError, { appearance: 'primary', symbol: 'sparkles' }),
         button(message.refresh, 'refresh-detail', state.detailLoading, { appearance: 'icon', symbol: 'arrow.clockwise' }),
-        button(t('View on GitHub', '在 GitHub 查看'), 'open-item', false, { appearance: 'icon', symbol: 'arrow.up.forward.square' }),
-        button(t('Close details', '关闭详情'), 'close-detail', false, { appearance: 'icon', symbol: 'xmark' })]);
+        button(t('View on GitHub', '在 GitHub 查看'), 'open-item', false, { appearance: 'icon', symbol: 'arrow.up.forward.square' })]);
       const summary = column([row([node('badge', status),
         styledText(boundedText(String(item.title || ''), 8192, '…'), 'title', 'neutral'),
         styledText(`#${item.number}`, 'caption')]),
