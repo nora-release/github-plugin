@@ -735,6 +735,12 @@
       return result;
     }
     function actions(model) { return [...commentActions(model), ...mergeActions(model)]; }
+    function nativeToolbarActions(model) {
+      const item = model.item || {}, repo = repository(model), repoState = section(model, 'repository');
+      if (!referenceLayout || item.state !== 'open' || item.draft || merged(item)
+        || !repoState.loaded || repoState.loading || repoState.error || repo.archived || repo.permissions?.push !== true) return [];
+      return [button(t('Merge…', '合并…'), 'pr-toggle-merge', { symbol: 'arrow.triangle.merge', disabled: !!model.merge?.busy })];
+    }
     const nativeRow = (title, subtitle = '', properties = {}, children = []) => {
       const { value, ...rest } = properties;
       return node('itemRow', { text: short(title, 512), ...(subtitle ? { subtitle: short(subtitle, 512) } : {}),
@@ -861,35 +867,12 @@
       const milestoneRows = typeof item.milestone?.title === 'string' && item.milestone.title.trim()
         ? [open(model, short(item.milestone.title, 160), item.milestone.html_url, '', { symbol: 'flag', tone: 'neutral' })]
         : [text(item.milestone === null ? t('No milestone', '暂无里程碑') : t('Milestone not available', '里程碑信息尚未获取'))];
-      const commentRows = [];
-      for (const [key, name, en, zh] of [['comments', 'comments', 'discussion comments', '条讨论留言'], ['review_comments', 'reviewComments', 'code comments', '条代码留言']]) {
-        const known = Number.isInteger(item[key]) && item[key] >= 0, count = known ? item[key] : items(model, name).length;
-        if (known || section(model, name).loaded || count) commentRows.push(button(known ? t(`${count} ${en}`, `${count} ${zh}`) : t(`${count} loaded ${en}`, `已加载 ${count} ${zh}`), 'pr-tab:discussion', { symbol: 'text.bubble', tone: 'neutral' }));
-      }
-      if (!commentRows.length) commentRows.push(text(t('Comments not loaded', '留言尚未加载')));
-      if (['comments', 'reviewComments'].some(incomplete)) commentRows.push(text(t('Comment history is incomplete', '留言记录不完整'), 'caption', 'warning'));
-      const checks = [...headItems(model, 'checks'), ...headItems(model, 'statuses')];
-      const results = checks.length ? checks : headItems(model, 'workflows');
-      const priority = entry => { const tone = status(entry).tone; return tone === 'danger' ? 0 : tone === 'warning' ? 1 : 2; };
-      const checkRows = results.slice().sort((a, b) => priority(a) - priority(b)).slice(0, 6).map((entry, index) => nativeRow(short(entry.name || entry.context || t('Check', '检查'), 160), '', {
-        id: `pr-aside-check-${index}`, action: 'pr-tab:checks', symbol: status(entry).symbol, tone: status(entry).tone,
-      }));
-      const ciIncomplete = ['checks', 'statuses', 'workflows'].some(incomplete);
-      if (!checkRows.length) checkRows.push(text(ciIncomplete ? t('Checks not available yet', '检查信息尚未获取') : t('No checks reported', '暂无检查记录')));
-      if (ciIncomplete) checkRows.push(text(t('Check results are incomplete', '检查信息不完整'), 'caption', 'warning'));
-      if (results.length > 6 || ciIncomplete) checkRows.push(button(t('View all checks', '查看全部检查'), 'pr-tab:checks', { symbol: 'chevron.right' }));
-      const merge = mergeState(item);
       return [node('column', { id: 'pr-context-aside' }, [
         contextSection('reviewers', t('Reviewers', '审查人'), reviewRows), node('divider'),
         contextSection('assignees', t('Assignees', '负责人'), assigneeRows), node('divider'),
         contextSection('labels', t('Labels', '标签'), labelRows), node('divider'),
         contextSection('milestone', t('Milestone', '里程碑'), milestoneRows), node('divider'),
-        contextSection('changes', t('Changes', '变更'), changes), node('divider'),
-        contextSection('comments', t('Comments', '留言'), commentRows), node('divider'),
-        contextSection('checks', t('Checks', '检查'), checkRows), node('divider'),
-        contextSection('merge', t('Merge status', '合并状态'), [nativeRow(merge.text, '', { action: 'pr-toggle-merge', symbol: merge.symbol, tone: merge.tone,
-          ...(supportsItemRowIcon && merge.iconSVG ? { iconSVG: merge.iconSVG } : {}) }),
-          ...(repository(model).archived ? [text(t('Repository is archived', '仓库已归档'))] : [])]),
+        contextSection('changes', t('Changes', '变更'), changes),
       ])];
     }
     function nativeDescription(model, sourceURL = prURL(model), id = 'pr-description') {
@@ -1190,7 +1173,7 @@
       if (model.mergeExpanded || model.merge?.pending) body.unshift(node('column', { id: 'pr-merge-options', appearance: 'secondary' }, mergeActions(model)));
       return body;
     }
-    return { summary, content, actions, tabs, nativeContent, nativeDescription, nativeAside, toggleCommitGroup, workflow, supportsNativeLayout };
+    return { summary, content, actions, tabs, nativeContent, nativeDescription, nativeAside, nativeToolbarActions, toggleCommitGroup, workflow, supportsNativeLayout };
   }
   const panelID = 'com.nora.github.panel';
   const clientID = 'Iv23liPZy7EARoSnYoYy';
@@ -1951,6 +1934,7 @@
       const isPR = state.kind === 'pulls', model = isPR ? pullDetails.current : { item, repo: itemRepository(item), number: item.number };
       const toolbar = node('toolbar', {}, [node('spacer'),
         button(t('Hand to Nora', '交给 Nora'), 'handoff-item', state.detailLoading || !!state.detailError, { appearance: 'primary', symbol: 'sparkles' }),
+        ...(isPR && !state.detailLoading && !state.detailError ? pullView.nativeToolbarActions(model) : []),
         button(message.refresh, 'refresh-detail', state.detailLoading, { appearance: 'icon', symbol: 'arrow.clockwise' }),
         button(t('View on GitHub', '在 GitHub 查看'), 'open-item', false, { appearance: 'icon', symbol: 'arrow.up.forward.square' })]);
       const summary = column([row([node('badge', status),

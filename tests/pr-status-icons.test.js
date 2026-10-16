@@ -70,7 +70,7 @@ test('Merged PRs use the exact provided SVG in the sidebar and heading ahead of 
   }
 });
 
-test('Merged status keeps the supplied SVG throughout context and readiness views while older item rows retain their fallback', async () => {
+test('Merged status remains in the heading and legacy readiness views without a duplicate context status', async () => {
   const item = pull(7, { state: 'closed', draft: true, merged: true,
     head: { sha: 'a'.repeat(40), ref: 'feature' }, base: { ref: 'main' }, comments: 0, review_comments: 0 });
   for (const [supportsDetailAside, supportsItemRowIcon, supportsTimeline, supportsPurpleTone] of [
@@ -96,14 +96,18 @@ test('Merged status keeps the supplied SVG throughout context and readiness view
       assert.equal(badge.tone, supportsPurpleTone ? 'purple' : 'accent');
       assert.equal(badge.iconSVG, expectedIcons.merged);
     }
-    const context = nodes(selected).find(node => node.id === (supportsDetailAside ? 'pr-aside-merge' : 'pr-readiness'));
-    assert.ok(context);
-    const merge = nodes(context).find(node => node.text === 'Merged');
-    assert.ok(merge);
-    assert.equal(merge.type, supportsDetailAside || !supportsTimeline ? 'itemRow' : 'badge');
-    assert.equal(merge.tone, supportsPurpleTone ? 'purple' : 'accent');
-    assert.equal(merge.symbol, 'arrow.triangle.merge');
-    assert.equal(merge.iconSVG, merge.type === 'badge' || supportsItemRowIcon ? expectedIcons.merged : undefined);
+    assert.ok(!nodes(selected).some(node => node.id === 'pr-aside-merge'));
+    const readiness = nodes(selected).find(node => node.id === 'pr-readiness');
+    if (supportsDetailAside) assert.equal(readiness, undefined);
+    else {
+      assert.ok(readiness);
+      const merge = nodes(readiness).find(node => node.text === 'Merged');
+      assert.ok(merge);
+      assert.equal(merge.type, supportsTimeline ? 'badge' : 'itemRow');
+      assert.equal(merge.tone, supportsPurpleTone ? 'purple' : 'accent');
+      assert.equal(merge.symbol, 'arrow.triangle.merge');
+      assert.equal(merge.iconSVG, merge.type === 'badge' || supportsItemRowIcon ? expectedIcons.merged : undefined);
+    }
     assert.ok(nodes(selected).filter(node => node.type === 'itemRow' && node.text === 'Merged')
       .every(node => supportsItemRowIcon ? node.iconSVG === expectedIcons.merged : !Object.hasOwn(node, 'iconSVG')));
     assert.ok(!nodes(selected).some(node => node.type === 'button' && node.text === 'Merged'));

@@ -38,6 +38,10 @@ test('The shipped SDK accepts the original comment card and loads reviewer and a
   assert.equal(detail.type, 'detail');
   assert.deepEqual(Array.from(detail.children.slice(0, 3), node => node.type), ['toolbar', 'column', 'tabBar']);
   assert.equal(detail.items.length, 1); assert.equal(detail.items[0].id, 'pr-context-aside');
+  assert.deepEqual(Array.from(detail.items[0].children.filter(node => node.type === 'column'), node => node.id),
+    ['pr-aside-reviewers', 'pr-aside-assignees', 'pr-aside-labels', 'pr-aside-milestone', 'pr-aside-changes']);
+  assert.equal(detail.items[0].children.filter(node => node.type === 'divider').length, 4);
+  assert.ok(!nodes(detail.items[0]).some(node => /pr-aside-(?:comments|checks|merge)/.test(node.id || '')));
   const reviewer = nodes(detail.items[0]).find(node => node.type === 'button' && node.text === 'reviewer');
   assert.equal(reviewer.avatarBase64, image);
   const assignee = nodes(detail.items[0]).find(node => node.type === 'button' && node.text === 'assignee');
@@ -55,15 +59,21 @@ test('The shipped SDK accepts the original comment card and loads reviewer and a
   assert.ok(f.requests.every(request => !request.method || request.method === 'GET'));
 });
 
-test('Context actions keep drafts, route to existing detail pages, and open merge options without changing GitHub', async () => {
+test('Detail tabs and merge actions remain available after context cleanup and preserve the comment draft', async () => {
   const f = currentHost(); const initial = await open(f);
   const field = nodes(initial).find(node => node.type === 'textEditor').id;
   const checks = await f.render({ action: 'pr-tab:checks', values: { [field]: 'Keep my draft.' } });
   assert.ok(!checks.children[1].items?.length, 'Dedicated check views use their full content width');
   const discussion = await f.render({ action: 'pr-tab:discussion' });
   assert.equal(discussion.children[1].items[0].id, 'pr-context-aside');
+  const detailNodes = discussion.children[1].children.flatMap(nodes);
+  assert.ok(detailNodes.some(node => node.action === 'pr-tab:checks'));
+  const mergeAction = nodes(discussion.children[1].children[0]).find(node => node.action === 'pr-toggle-merge');
+  assert.ok(mergeAction, 'The real toolbar retains merge access after removing the context status');
+  assert.equal(mergeAction.disabled, false);
+  assert.ok(detailNodes.some(node => node.action === 'pr-comment'));
   assert.equal(nodes(discussion).find(node => node.type === 'textEditor').value, 'Keep my draft.');
-  const merge = await f.render({ action: 'pr-toggle-merge' });
+  const merge = await f.render({ action: mergeAction.action });
   assert.ok(nodes(merge).some(node => node.id === 'pr-merge-options'));
   assert.ok(nodes(merge).some(node => node.action === 'pr-merge:merge'));
   assert.ok(!nodes(merge).some(node => node.action === 'pr-confirm-merge'));

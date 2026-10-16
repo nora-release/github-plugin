@@ -28,31 +28,21 @@ const model = () => ({
   jobsByRun: {}, comment: { draft: 'An unfinished reply.', fieldID: 'draft' }, merge: { pending: null },
 });
 
-test('The context column follows the reference sections and only exposes existing navigation actions', () => {
+test('The context column contains only the five metadata sections and no duplicate comment check or merge summary', () => {
   const api = view(), current = model(), aside = api.nativeAside(current);
   assert.equal(aside.length, 1);
   assert.equal(aside[0].type, 'column');
   assert.equal(aside[0].id, 'pr-context-aside');
   assert.deepEqual(Array.from(aside[0].children.filter(node => node.type === 'column'), node => node.id),
-    ['pr-aside-reviewers', 'pr-aside-assignees', 'pr-aside-labels', 'pr-aside-milestone', 'pr-aside-changes', 'pr-aside-comments', 'pr-aside-checks', 'pr-aside-merge']);
+    ['pr-aside-reviewers', 'pr-aside-assignees', 'pr-aside-labels', 'pr-aside-milestone', 'pr-aside-changes']);
+  assert.equal(aside[0].children.filter(node => node.type === 'divider').length, 4);
+  assert.equal(aside[0].children.at(-1).id, 'pr-aside-changes');
   const nodes = flatten(aside);
   assert.ok(nodes.some(node => node.text === '60 files' && node.action === 'pr-tab:files'));
   assert.ok(nodes.some(node => node.text === '+2348' && node.tone === 'success'));
   assert.ok(nodes.some(node => node.text === '−882' && node.tone === 'danger'));
-  assert.ok(nodes.some(node => node.text === 'Merge conflicts' && node.action === 'pr-toggle-merge' && node.tone === 'danger'));
-  assert.ok(!nodes.some(node => /^(?:pr-merge:|pr-confirm-merge|pr-comment$)/.test(node.action || '')));
-});
-
-test('A merged context retains its semantic status when a caller supplies no custom status icon', () => {
-  const current = model(); current.item.merged = true; current.item.state = 'closed'; current.item.draft = true;
-  for (const tone of ['success', 'accent', 'purple']) {
-    const api = view({ supportsItemRowIcon: true, itemStatus: () => ({ text: 'Open', tone }) });
-    const merge = flatten(api.nativeAside(current)).find(node => node.type === 'itemRow' && node.text === 'Merged');
-    assert.ok(merge);
-    assert.equal(merge.tone, tone === 'purple' ? 'purple' : 'accent');
-    assert.equal(merge.symbol, 'arrow.triangle.merge');
-    assert.equal(merge.iconSVG, undefined);
-  }
+  assert.ok(!nodes.some(node => ['pr-aside-comments', 'pr-aside-checks', 'pr-aside-merge'].includes(node.id)));
+  assert.ok(!nodes.some(node => /^(?:pr-toggle-merge|pr-merge:|pr-confirm-merge|pr-comment$|pr-tab:(?:checks|discussion)$)/.test(node.action || '')));
 });
 
 test('Reviewers preserve participant avatar tracking and distinguish requested, approved and changes requested states', () => {
@@ -127,43 +117,58 @@ test('Unavailable and paginated review data remain visibly incomplete with bound
   function apiAside(current) { return view().nativeAside(current); }
 });
 
-test('Comment totals are reported as discussion and code comments without inventing resolved thread counts', () => {
+test('Loaded or incomplete comments and checks never restore removed context sections', () => {
   const current = model();
-  const comments = view().nativeAside(current)[0].children.find(node => node.id === 'pr-aside-comments');
-  assert.match(text([comments]), /2 discussion comments/);
-  assert.match(text([comments]), /3 code comments/);
-  assert.doesNotMatch(text([comments]), /resolved/i);
+  const api = view(), expected = api.nativeAside(current);
+  for (const source of ['comments', 'reviewComments', 'checks', 'statuses', 'workflows']) {
+    current.sections[source] = section([{ id: 1, name: 'real-check', context: 'real-status', head_sha: headSHA, status: 'completed', conclusion: 'failure' }]);
+  }
+  assert.deepEqual(api.nativeAside(current), expected);
+  for (const source of ['comments', 'reviewComments', 'checks', 'statuses', 'workflows']) {
+    current.sections[source] = section([], { loaded: false, loading: true, error: 'Unavailable', nextPage: 2, notice: 'Source capped' });
+  }
   delete current.item.comments; delete current.item.review_comments;
-  current.sections.comments = section([{ id: 1 }], { nextPage: 2 });
-  const partial = view().nativeAside(current)[0].children.find(node => node.id === 'pr-aside-comments');
-  assert.match(text([partial]), /1 loaded discussion comments/);
-  assert.match(text([partial]), /Comment history is incomplete/);
+  current.item.merged = true; current.item.state = 'closed';
+  assert.deepEqual(api.nativeAside(current), expected);
 });
 
-test('Check summaries show real current-commit names, failed first, and preserve incomplete source warnings', () => {
-  const current = model();
-  current.sections.checks = section(Array.from({ length: 8 }, (_, index) => ({ id: index, name: `real-check-${index}`, head_sha: headSHA, status: 'completed', conclusion: index === 7 ? 'failure' : 'success' })));
-  current.sections.checks.items.push({ id: 9, name: 'stale-check', head_sha: 'b'.repeat(40), status: 'completed', conclusion: 'failure' });
-  current.sections.workflows = section([], { error: 'Actions unavailable' });
-  const checks = view().nativeAside(current)[0].children.find(node => node.id === 'pr-aside-checks');
-  const rows = checks.children.filter(node => node.type === 'itemRow');
-  assert.equal(rows.length, 6);
-  assert.equal(rows[0].text, 'real-check-7'); assert.equal(rows[0].tone, 'danger');
-  assert.ok(rows.every(node => node.action === 'pr-tab:checks'));
-  assert.doesNotMatch(text([checks]), /stale-check/);
-  assert.match(text([checks]), /Check results are incomplete/);
-  assert.ok(checks.children.some(node => node.text === 'View all checks' && node.action === 'pr-tab:checks'));
+test('Merge access stays in the modern toolbar only for an open writable repository', () => {
+  const current = model(), api = view();
+  current.sections.repository = section([], { data: { permissions: { push: true } } });
+  for (const tab of ['discussion', 'checks', 'commits', 'files']) {
+    current.tab = tab;
+    const actions = api.nativeToolbarActions(current);
+    assert.equal(actions.length, 1);
+    assert.equal(actions[0].action, 'pr-toggle-merge');
+    assert.equal(actions[0].disabled, false);
+  }
+  current.merge.busy = true;
+  assert.equal(api.nativeToolbarActions(current)[0].disabled, true);
+  current.merge.busy = false;
+  for (const changes of [{ state: 'closed' }, { state: undefined }, { draft: true }, { merged: true }, { merged_at: '2026-10-16' }, { pull_request: { merged_at: '2026-10-16' } }]) {
+    const original = current.item; current.item = { ...original, ...changes };
+    assert.equal(api.nativeToolbarActions(current).length, 0);
+    current.item = original;
+  }
+  for (const changes of [{ loaded: false }, { loading: true }, { error: 'Permission denied' }, { data: { archived: true, permissions: { push: true } } }, { data: { permissions: { push: false } } }, { data: {} }]) {
+    const original = current.sections.repository; current.sections.repository = { ...original, ...changes };
+    assert.equal(api.nativeToolbarActions(current).length, 0);
+    current.sections.repository = original;
+  }
+  for (const changes of [{ supportsDetailAside: false }, { supportsNativeLayout: false }, { supportsNativeTimeline: false }]) {
+    assert.equal(view(changes).nativeToolbarActions(current).length, 0);
+  }
 });
 
-test('Missing sources and zero results are distinct states and never imply all checks passed or all reviews approved', () => {
+test('Missing reviewer sources remain distinct from known empty reviews', () => {
   const current = model(); current.item.requested_reviewers = [];
-  for (const name of ['checks', 'statuses', 'workflows', 'reviews']) current.sections[name] = section([], { loaded: false, loading: true });
+  current.sections.reviews = section([], { loaded: false, loading: true });
   const pending = text(view().nativeAside(current));
-  assert.match(pending, /Checks not available yet/); assert.match(pending, /Reviewers not available yet/);
+  assert.match(pending, /Reviewers not available yet/);
   assert.doesNotMatch(pending, /all checks passed|all.*approved|ready to merge/i);
-  for (const name of ['checks', 'statuses', 'workflows', 'reviews']) current.sections[name] = section();
+  current.sections.reviews = section();
   const empty = text(view().nativeAside(current));
-  assert.match(empty, /No checks reported/); assert.match(empty, /No reviewers/);
+  assert.match(empty, /No reviewers/);
 });
 
 test('The original description is a comment card with its real author date and association before activity', () => {
@@ -182,7 +187,7 @@ test('The original description is a comment card with its real author date and a
   assert.equal(body[0].id, 'pr-description');
   assert.equal(body[1].id, 'pr-conversation');
   assert.ok(!body.some(node => node.type === 'divider' || node.text === 'Activity'));
-  assert.ok(!flatten(body).some(node => node.id === 'pr-readiness'), 'Status information moves to the context column once');
+  assert.ok(!flatten(body).some(node => node.id === 'pr-readiness'), 'Modern discussion avoids duplicate readiness summaries');
   assert.equal(body.at(-1).id, 'pr-comment-composer');
   assert.ok(flatten(body).some(node => node.type === 'textEditor' && node.value === 'An unfinished reply.'));
 });
