@@ -197,7 +197,11 @@ test('Timeline commit authors use exact GitHub commit identity and keep unmatche
     { sha: olderSHA, author: null, committer: user('wrong-committer', 91), commit: { message: 'Unknown message', author: { name: 'team', email: 'not-a-github-login@example.com' } } }];
   const f = participantFixture({ timeline: [{ id: 1, event: 'committed', sha: head.toUpperCase(), author: { name: 'Raw Git Name' } },
     { id: 2, event: 'committed', sha: olderSHA, author: { name: 'team' }, actor: user('wrong-pusher', 94) }], commits });
-  const initial = await openPR(f);
+  const collapsed = await openPR(f);
+  const group = nodes(collapsed).find(value => value.action?.startsWith('pr-commits:'));
+  assert.ok(group);
+  assert.ok(!author(collapsed, 'Raw Git Name'));
+  const initial = await f.render({ action: group.action });
   assert.ok(author(initial, 'Raw Git Name'));
   let current = await painted(f); current = await painted(f);
   assert.equal(author(current, 'linked-author')?.avatarBase64, image);

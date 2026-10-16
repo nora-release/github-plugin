@@ -39,7 +39,9 @@
     function deduplicate(name, items) {
       const keys = new Map();
       for (const item of items) {
-        const key = name === 'files' ? item.filename : name === 'commits' ? item.sha : item.id ?? item.node_id ?? (name === 'timeline' && item.event === 'committed' ? item.sha : undefined);
+        const timelineSHA = name === 'timeline' && item.event === 'committed' ? item.sha || item.commit_id : '';
+        const key = /^[a-f\d]{40}$/i.test(timelineSHA || '') ? `commit:${timelineSHA.toLowerCase()}`
+          : name === 'files' ? item.filename : name === 'commits' ? item.sha : item.id ?? item.node_id ?? (name === 'timeline' && item.event === 'committed' ? item.sha : undefined);
         if (typeof key !== 'string' && !Number.isSafeInteger(key)) throw invalid();
         if (typeof key === 'string' && (!key || key.length > 1024)) throw invalid();
         keys.set(String(key), item);
@@ -84,6 +86,8 @@
       const same = previous?.key === info.key;
       const record = { ...info, item, headSHA: shaFor(item), tab: preserveTab && same ? previous.tab : 'discussion', generation: ++revision,
         sections: Object.fromEntries(names.map(name => [name, section()])), jobsByRun: {},
+        expandedCommitGroups: same && previous.headSHA === shaFor(item) ? new Set(previous.expandedCommitGroups || []) : new Set(),
+        commitGroupMembers: same && previous.headSHA === shaFor(item) ? new Map(previous.commitGroupMembers || []) : new Map(),
         selectedFileID: preserveTab && same ? previous.selectedFileID : null, filesDetailVisible: preserveTab && same && previous.filesDetailVisible === true,
         comment: { fieldID: same ? previous.comment.fieldID : `pr-comment-${info.key}`, draft: same ? previous.comment.draft : '', error: same && previous.comment.uncertain ? previous.comment.error : '', notice: '', busy: commentOperations.has(info.key), uncertain: same ? previous.comment.uncertain : false },
         merge: { pending: null, error: '', notice: '', busy: mergeOperations.has(info.key) } };
@@ -331,6 +335,23 @@
       };
       return bytes(JSON.stringify(value.map(normalize)).replace(/\//g, '\\/'));
     };
+    const commitGroupRows = new WeakMap();
+    function fittedCommitGroup(card, maximumNodes, maximumBytes) {
+      const group = commitGroupRows.get(card);
+      if (!group || countNodes(card) <= maximumNodes && encodedSize([card]) <= maximumBytes) return card;
+      const kept = [], header = card.children[0];
+      const notice = count => text(t(`Showing ${count} of ${group.rows.length} loaded commits.`, `显示已加载的 ${group.rows.length} 次提交中的 ${count} 次。`));
+      const link = button(t('View all commits', '查看全部提交'), 'pr-tab:commits', { symbol: 'chevron.right' });
+      const fixed = [header, notice(group.rows.length), link];
+      let nodes = 1 + fixed.reduce((sum, child) => sum + countNodes(child), 0), size = encodedSize([node('column', { id: card.id }, fixed)]);
+      if (nodes > maximumNodes || size > maximumBytes) return null;
+      for (const child of group.rows) {
+        const childNodes = countNodes(child), childBytes = encodedSize([child]);
+        if (nodes + childNodes > maximumNodes || size + childBytes > maximumBytes) break;
+        kept.push(child); nodes += childNodes; size += childBytes;
+      }
+      return node('column', { id: card.id }, [header, ...kept, notice(kept.length), link]);
+    }
     const fit = (model, header, cards, footer, suffix, preferRecent = false, reservedNodes = 0) => {
       const overflow = [badge(t('More activity is available on GitHub.', '还有更多内容，可在 GitHub 查看。'), 'muted'), open(model, t('View complete history', '查看完整内容'), prURL(model) + suffix, suffix)];
       const fixed = [...header, ...footer, ...overflow];
@@ -338,9 +359,11 @@
       let nodes = reservedNodes + aside.reduce((sum, value) => sum + countNodes(value), 0) + fixed.reduce((sum, value) => sum + countNodes(value), 0), size = encodedSize([...fixed, ...aside]);
       const kept = [];
       for (const card of preferRecent ? cards.slice().reverse() : cards) {
-        const nextNodes = countNodes(card), nextSize = encodedSize([card]);
+        const candidate = fittedCommitGroup(card, 200 - nodes, 185 * 1024 - size);
+        if (!candidate) break;
+        const nextNodes = countNodes(candidate), nextSize = encodedSize([candidate]);
         if (nodes + nextNodes > 200 || size + nextSize > 185 * 1024) break;
-        kept.push(card); nodes += nextNodes; size += nextSize;
+        kept.push(candidate); nodes += nextNodes; size += nextSize;
       }
       if (preferRecent) kept.reverse();
       return [...header, ...kept, ...(kept.length < cards.length ? overflow : []), ...footer];
@@ -458,9 +481,15 @@
       const sources = [['comments', t('Comments', '留言')], ['reviews', t('Reviews', '审查')], ['reviewComments', t('Inline comments', '代码留言')], ['timeline', t('Activity', '动态')]];
       const activity = [];
       const known = Object.fromEntries(['comments', 'reviews', 'reviewComments'].map(name => [name, new Set(items(model, name).map(entry => String(entry.id)))]));
+      const timelineCommits = new Set();
       for (const [name] of sources) for (const entry of items(model, name)) {
         let source = name;
         if (name === 'timeline') {
+          const sha = entry.event === 'committed' ? entry.sha || entry.commit_id : '';
+          if (/^[a-f\d]{40}$/i.test(sha || '')) {
+            if (timelineCommits.has(sha.toLowerCase())) continue;
+            timelineCommits.add(sha.toLowerCase());
+          }
           if (entry.event === 'line-commented' && Array.isArray(entry.comments)) {
             for (const comment of entry.comments) if (!known.reviewComments.has(String(comment.id))) activity.push({ source: 'reviewComments', entry: comment, timestamp: comment.created_at || entry.created_at || '' });
             continue;
@@ -472,6 +501,55 @@
       }
       activity.sort((a, b) => a.timestamp.localeCompare(b.timestamp) || String(a.entry.id || '').localeCompare(String(b.entry.id || '')));
       return { sources, activity };
+    }
+    const commitGroupKey = (model, first, last) => {
+      const source = `${model.key || `${model.repo}/${model.number}`}|${(first.sha || first.commit_id).toLowerCase()}|${(last.sha || last.commit_id).toLowerCase()}`;
+      let left = 2166136261, right = 2246822507;
+      for (let index = 0; index < source.length; index++) {
+        left = Math.imul(left ^ source.charCodeAt(index), 16777619);
+        right = Math.imul(right ^ source.charCodeAt(index), 3266489917);
+      }
+      return (left >>> 0).toString(16).padStart(8, '0') + (right >>> 0).toString(16).padStart(8, '0');
+    };
+    function groupedActivity(model, activity) {
+      const result = [], members = new Map();
+      const previousExpanded = model.expandedCommitGroups || new Set(), previousMembers = model.commitGroupMembers || new Map();
+      const isCommit = value => value.source === 'timeline' && value.entry.event === 'committed' && /^[a-f\d]{40}$/i.test(value.entry.sha || value.entry.commit_id || '');
+      const loaded = new Set(activity.filter(isCommit).map(value => (value.entry.sha || value.entry.commit_id).toLowerCase()));
+      for (let index = 0; index < activity.length;) {
+        if (!isCommit(activity[index])) { result.push(activity[index++]); continue; }
+        const entries = [];
+        while (index < activity.length && isCommit(activity[index])) entries.push(activity[index++]);
+        if (entries.length === 1) { result.push(entries[0]); continue; }
+        const key = commitGroupKey(model, entries[0].entry, entries.at(-1).entry);
+        members.set(key, new Set(entries.map(value => (value.entry.sha || value.entry.commit_id).toLowerCase())));
+        result.push({ entries, key });
+      }
+      const currentKeys = new Set(members.keys()), expanded = new Set();
+      const timeline = section(model, 'timeline'), complete = timeline.loaded && !timeline.loading && !timeline.error && !timeline.nextPage && !timeline.notice;
+      for (const key of previousExpanded) {
+        const remembered = previousMembers.get(key) || new Set();
+        const matches = [...currentKeys].filter(current => [...members.get(current)].some(sha => remembered.has(sha)));
+        if (!matches.length && !complete) { members.set(key, new Set(remembered)); expanded.add(key); continue; }
+        for (const current of matches) expanded.add(current);
+        if (!complete && matches.length) for (const sha of remembered) if (!loaded.has(sha)) members.get(matches.at(-1)).add(sha);
+      }
+      let count = [...members.values()].reduce((sum, commits) => sum + commits.size, 0);
+      for (const [key, commits] of members) {
+        if (count <= 400) break;
+        if (currentKeys.has(key)) continue;
+        members.delete(key); expanded.delete(key); count -= commits.size;
+      }
+      model.commitGroupMembers = members;
+      model.expandedCommitGroups = expanded;
+      return result;
+    }
+    function toggleCommitGroup(model, key) {
+      if (!supportsNativeTimeline || !/^[a-f\d]{16}$/.test(key)) return false;
+      if (!groupedActivity(model, discussionActivity(model).activity).some(value => value.key === key)) return false;
+      if (model.expandedCommitGroups.has(key)) model.expandedCommitGroups.delete(key);
+      else model.expandedCommitGroups.add(key);
+      return true;
     }
     function discussion(model) {
       const { sources, activity } = discussionActivity(model);
@@ -859,7 +937,8 @@
         return [...(suitable ? [markdown(summary, 1024)] : []), node('markdown', { text: collapsed })];
       };
       const { sources, activity } = discussionActivity(model);
-      const cards = activity.slice(-80).map(({ source, entry }, index) => {
+      const entries = groupedActivity(model, activity);
+      const activityRow = ({ source, entry }, id) => {
         const event = source === 'timeline', created = date(entry), metadata = [], body = [];
         if (event) {
           const sha = entry.sha || entry.commit_id;
@@ -880,17 +959,29 @@
           if (entry.body) body.push(...commentBody(source, entry));
           else if (source === 'reviews') body.push(text(t('Review submitted without a message.', '已提交审查，没有附加留言。')));
         }
-        return node('timelineItem', { id: `pr-activity-${index}`, value: event ? 'event' : 'comment' }, [
+        return node('timelineItem', { id, value: event ? 'event' : 'comment' }, [
           authorButton(model, entry, prURL(model)), row(metadata), ...(body.length ? [column(body)] : []),
         ]);
+      };
+      const cards = entries.slice(-80).map((value, index) => {
+        if (!value.entries) return activityRow(value, `pr-activity-${index}`);
+        const expanded = model.expandedCommitGroups.has(value.key);
+        const lastDate = date(value.entries.at(-1).entry);
+        const header = nativeRow(t(`${value.entries.length} commits`, `${value.entries.length} 次提交`), '', {
+          id: `pr-commit-group-header-${value.key}`, action: `pr-commits:${value.key}`, symbol: 'arrow.triangle.branch', tone: 'muted',
+        }, [...(lastDate ? [text(lastDate)] : []), node('badge', { text: '', symbol: expanded ? 'chevron.down' : 'chevron.right', tone: 'muted', appearance: 'plain' })]);
+        const rows = expanded ? value.entries.map((entry, offset) => activityRow(entry, `pr-group-commit-${value.key}-${offset}`)) : [];
+        const card = node('column', { id: `pr-commit-group-${value.key}` }, [header, ...rows]);
+        if (expanded) commitGroupRows.set(card, { rows });
+        return card;
       });
       const footer = sources.flatMap(([name, label]) => sectionState(model, name, label));
-      if (activity.length > 80) footer.push(text(t('Showing part of the loaded history. View the full conversation on GitHub.', '这里只显示部分已加载记录，完整讨论可在 GitHub 查看。')));
+      if (entries.length > 80) footer.push(text(t('Showing part of the loaded history. View the full conversation on GitHub.', '这里只显示部分已加载记录，完整讨论可在 GitHub 查看。')));
       if (!hasDetailAside(model)) footer.push(nativeReadiness(model));
       footer.push(...nativeCommentComposer(model));
       const fitted = fit(model, hasDetailAside(model) ? [nativeDescription(model), node('divider'), text(t('Activity', '动态'), 'headline', 'neutral')] : [nativeDescription(model)], cards, footer, '', true, 1);
       const start = hasDetailAside(model) ? 3 : 0;
-      const end = fitted.findIndex((value, index) => index >= start && (value.type !== 'timelineItem' || value.id === 'pr-comment-composer'));
+      const end = fitted.findIndex((value, index) => index >= start && (value.type !== 'timelineItem' && !value.id?.startsWith('pr-commit-group-') || value.id === 'pr-comment-composer'));
       const threadEnd = end < 0 ? fitted.length : end;
       return [...fitted.slice(0, start), node('column', { id: 'pr-conversation' }, fitted.slice(start, threadEnd)), ...fitted.slice(threadEnd)];
     }
@@ -1058,7 +1149,7 @@
       if (model.mergeExpanded || model.merge?.pending) body.unshift(node('column', { id: 'pr-merge-options', appearance: 'secondary' }, mergeActions(model)));
       return body;
     }
-    return { summary, content, actions, tabs, nativeSummary, nativeContent, nativeDescription, nativeAside, workflow, supportsNativeLayout };
+    return { summary, content, actions, tabs, nativeSummary, nativeContent, nativeDescription, nativeAside, toggleCommitGroup, workflow, supportsNativeLayout };
   }
   const panelID = 'com.nora.github.panel';
   const clientID = 'Iv23liPZy7EARoSnYoYy';
@@ -2102,6 +2193,7 @@
           model.checksDetailVisible = true;
         }
       }
+      else if (action?.startsWith('pr-commits:') && pullDetails.current) pullView.toggleCommitGroup(pullDetails.current, action.slice(11));
       else if (action === 'pr-toggle-merge' && pullDetails.current) pullDetails.current.mergeExpanded = !pullDetails.current.mergeExpanded;
       else if (action === 'pr-comment') await pullDetails.postComment({ authorized: typeof event.actionCapability === 'string' && !!event.actionCapability.trim() });
       else if (action?.startsWith('pr-merge:')) {
