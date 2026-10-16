@@ -757,18 +757,6 @@
         ...(Number.isInteger(counts[tab]) && counts[tab] > 0 ? { subtitle: String(counts[tab]) } : {}),
       })));
     }
-    function nativeSummary(model) {
-      const item = model.item || {}, base = item.base?.ref || item.base?.label, head = item.head?.ref || item.head?.label;
-      if (referenceLayout && model.sections) return [node('row', { id: 'pr-author-context' }, [
-        authorButton(model, item, prURL(model)), ...(date(item) ? [text(date(item))] : []),
-        ...(head || base ? [node('text', { id: 'pr-branch-context', text: [head, base].filter(Boolean).join(' → '), textStyle: 'monospaced', tone: 'muted' })] : []),
-      ])];
-      return base || head ? [row([
-        ...(base ? [node('badge', { text: base, tone: 'neutral' })] : []),
-        ...(base && head ? [text('←')] : []),
-        ...(head ? [node('badge', { text: head, tone: 'neutral' })] : []),
-      ])] : [];
-    }
     function nativeReadiness(model) {
       const checks = [...headItems(model, 'checks'), ...headItems(model, 'statuses')], runs = headItems(model, 'workflows');
       const incomplete = ['checks', 'statuses', 'workflows'].some(name => { const value = section(model, name); return !value.loaded || value.loading || value.error || value.nextPage || value.notice; });
@@ -1168,7 +1156,7 @@
       if (model.mergeExpanded || model.merge?.pending) body.unshift(node('column', { id: 'pr-merge-options', appearance: 'secondary' }, mergeActions(model)));
       return body;
     }
-    return { summary, content, actions, tabs, nativeSummary, nativeContent, nativeDescription, nativeAside, toggleCommitGroup, workflow, supportsNativeLayout };
+    return { summary, content, actions, tabs, nativeContent, nativeDescription, nativeAside, toggleCommitGroup, workflow, supportsNativeLayout };
   }
   const panelID = 'com.nora.github.panel';
   const clientID = 'Iv23liPZy7EARoSnYoYy';
@@ -1927,14 +1915,13 @@
     const item = state.selected, status = itemStatus(item), date = itemDate(item);
     if (pullView.supportsNativeLayout && (state.kind === 'issues' || pullDetails.current)) {
       const isPR = state.kind === 'pulls', model = isPR ? pullDetails.current : { item, repo: itemRepository(item), number: item.number };
-      const toolbar = node('toolbar', {}, [styledText(`${itemRepository(item)} / ${isPR ? 'PR' : 'Issue'} #${item.number}`, 'caption'), node('spacer'),
+      const toolbar = node('toolbar', {}, [node('spacer'),
         button(t('Hand to Nora', '交给 Nora'), 'handoff-item', state.detailLoading || !!state.detailError, { appearance: 'primary', symbol: 'sparkles' }),
         button(message.refresh, 'refresh-detail', state.detailLoading, { appearance: 'icon', symbol: 'arrow.clockwise' }),
         button(t('View on GitHub', '在 GitHub 查看'), 'open-item', false, { appearance: 'icon', symbol: 'arrow.up.forward.square' })]);
       const summary = column([row([node('badge', status),
         styledText(boundedText(String(item.title || ''), 8192, '…'), 'title', 'neutral'),
-        styledText(`#${item.number}`, 'caption')]),
-        ...(isPR ? pullView.nativeSummary(model) : [])]);
+        styledText(`#${item.number}`, 'caption')])]);
       const body = state.detailLoading ? [node('progress', { text: t('Loading details…', '正在加载详情…') })]
         : state.detailError ? [node('badge', { text: short(state.detailError, 512), tone: 'danger' }), button(t('Retry details', '重试详情'), 'retry-detail')]
           : isPR ? pullView.nativeContent(model) : [pullView.nativeDescription(model, item.html_url, 'issue-description'),

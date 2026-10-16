@@ -22,7 +22,8 @@ function assertHeading(view, item, kind, label) {
   assert.equal(heading.children[2].text, `#${item.number}`);
   assert.equal(heading.children[2].textStyle, 'caption');
   assert.ok(!nodes(detail.children[0]).some(node => node.type === 'badge'));
-  assert.equal(detail.children[0].children[0].text, `alice/project / ${kind} #${item.number}`);
+  assert.ok(detail.children[0].children.every(node => ['spacer', 'button'].includes(node.type)));
+  assert.equal(detail.children[1].children.length, 1, 'The title metadata is promoted without retaining an author or branch block');
   assert.ok(!nodes(detail.children[0]).some(node => node.action === 'close-detail' || node.symbol === 'xmark'));
   assert.equal(view.action, 'close-detail');
   assert.ok(heading.children.every(node => !node.action));

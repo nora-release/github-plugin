@@ -126,11 +126,8 @@ test('Missing sources and zero results are distinct states and never imply all c
   assert.match(empty, /No checks reported/); assert.match(empty, /No reviewers/);
 });
 
-test('Main content uses an unframed original description with author and branch metadata under the title', () => {
-  const api = view(), current = model(), summary = flatten(api.nativeSummary(current));
-  const author = summary.find(node => node.text === 'author');
-  assert.equal(author.type, 'button'); assert.equal(author.avatarBase64, 'avatar:author');
-  assert.deepEqual(Array.from(summary.filter(node => node.type === 'text'), node => node.text), ['2026-10-15', 'feature → main']);
+test('Main content uses an unframed original description before activity and the comment composer', () => {
+  const api = view(), current = model();
   const body = api.nativeContent(current), description = body.find(node => node.id === 'pr-description');
   assert.equal(description.type, 'column'); assert.equal(description.appearance, undefined);
   assert.deepEqual(Array.from(description.children, node => node.type), ['markdown']);

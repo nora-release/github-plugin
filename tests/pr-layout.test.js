@@ -227,16 +227,11 @@ test('Native PR tabs keep one current section and expose counts separately from 
   }
 });
 
-test('Native fixed headings keep only branch context while readiness stays with the discussion', () => {
+test('Native readiness stays with the discussion rather than dedicated file views', () => {
   const current = model();
   current.item.changed_files = 29; current.item.additions = 459; current.item.deletions = 83;
   current.sections.checks = section([check(1, { conclusion: 'failure' })]);
   const api = view('en', { supportsNativeLayout: true });
-  const heading = flatten(api.nativeSummary(current));
-  assert.equal(heading[0].type, 'row');
-  assert.deepEqual(Array.from(heading.slice(1), value => value.text), ['main', '←', 'change']);
-  assert.ok(heading.filter(value => value.type === 'badge').every(value => value.tone === 'neutral' && !value.appearance));
-  assert.ok(!heading.some(value => /CI|459|83|29 files/.test(value.text || '')));
   current.tab = 'discussion';
   const discussion = api.nativeContent(current);
   const description = discussion.find(value => value.id === 'pr-description');
@@ -246,20 +241,6 @@ test('Native fixed headings keep only branch context while readiness stays with 
   assert.ok(readiness.children.some(value => value.action === 'pr-tab:checks' && value.tone === 'danger' && /failed/.test(value.text)));
   current.tab = 'files';
   assert.ok(!flatten(api.nativeContent(current)).some(value => value.id === 'pr-readiness'), 'The file reading area must not repeat discussion status cards');
-});
-
-test('Native branch context preserves full refs and avoids a dangling merge arrow', () => {
-  const current = model(), api = view('en', { supportsNativeLayout: true });
-  const head = 'fix/' + 'long-but-valid-reference-'.repeat(8);
-  current.item.head = { ref: head, label: `contributor:${head}` };
-  const branches = flatten(api.nativeSummary(current)).filter(value => value.type === 'badge');
-  assert.deepEqual(Array.from(branches, value => value.text), ['main', head]);
-  delete current.item.head;
-  assert.deepEqual(Array.from(flatten(api.nativeSummary(current)).slice(1), value => value.text), ['main']);
-  delete current.item.base;
-  assert.equal(api.nativeSummary(current).length, 0);
-  current.item.head = { label: 'contributor:feature' };
-  assert.deepEqual(Array.from(flatten(api.nativeSummary(current)).slice(1), value => value.text), ['contributor:feature']);
 });
 
 test('Native discussion distinguishes messages from activity without repeating generic badges or headings', () => {
@@ -506,7 +487,6 @@ test('Native file totals show the full PR change count only in the file list hea
   assert.equal(left[1].id, 'pr-file-totals');
   assert.deepEqual(Array.from(left[1].children, value => value.text), ['+455', '−21']);
   assert.ok(left[1].children.every(value => value.type === 'badge' && value.appearance === 'plain'));
-  assert.ok(!flatten(view('en', { supportsNativeLayout: true }).nativeSummary(current)).some(value => /455|21/.test(value.text || '')));
   current.item.additions = 0; current.item.deletions = 0;
   assert.deepEqual(Array.from(nativeFileView(current)[0].children[0].children[1].children, value => value.text), ['+0', '−0']);
   delete current.item.additions; delete current.item.deletions;

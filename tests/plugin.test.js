@@ -711,7 +711,7 @@ test('A selected PR has one detail header and a complete Markdown description be
   assert.equal(detail.id, 'item-details');
   assert.equal(detail.children[0].type, 'toolbar');
   assert.equal(nodes(detail).filter(node => node.type === 'toolbar').length, 1);
-  assert.match(texts(detail.children[0]), /alice\/project \/ PR #42/);
+  assert.ok(!nodes(detail.children[0]).some(node => node.type === 'text'), 'The window actions must not repeat repository metadata');
   assert.ok(!nodes(detail.children[0]).some(node => node.type === 'badge'));
   assert.equal(nodes(detail.children[1]).filter(node => node.type === 'badge' && node.text === 'Merged').length, 1);
   assert.equal(nodes(detail).find(node => node.id === 'pr-readiness').children[1].children.at(-1).text, 'Merged');
