@@ -70,6 +70,18 @@ test('A long bot paragraph preserves its exact claim instead of inventing check 
   assert.ok(collapsed(card));
 });
 
+test('Netlify inline span markup retains a readable summary without changing the original body', () => {
+  const body = '### <span aria-hidden="true">✅</span> Deploy Preview for *vitest-dev* ready!\n\n' + botCommentBody;
+  const card = activity(model('comments', comment(body)))[0];
+  const markdown = flatten([card]).filter(value => value.type === 'markdown');
+  assert.equal(markdown[0].text, '✅ Deploy Preview for *vitest-dev* ready!');
+  assert.equal(originalBody(collapsed(card)), body);
+  for (const unsafe of ['<script>not a heading</script>', '<spanx>not a heading</spanx>', '<span>name</span><details>hidden</details>']) {
+    const rejected = activity(model('comments', comment(`${unsafe}\n\n${botCommentBody}`)))[0];
+    assert.equal(flatten([rejected]).filter(value => value.type === 'markdown').length, 1);
+  }
+});
+
 test('Bot identities require a GitHub Bot type or valid bot login rather than bot-like human names', () => {
   for (const user of [{ login: 'integration', type: 'Bot' }, { login: 'github-actions[bot]' }]) {
     assert.ok(collapsed(activity(model('comments', comment(botCommentBody, user)))[0]));

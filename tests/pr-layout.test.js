@@ -223,6 +223,7 @@ test('Native PR tabs keep one current section and expose counts separately from 
     assert.equal(tabs.children.filter(value => value.value === 'selected').length, 1);
     assert.equal(tabs.children.find(value => value.value === 'selected').action, `pr-tab:${tab}`);
     assert.equal(tabs.children.find(value => value.action === 'pr-tab:files').subtitle, '25');
+    assert.deepEqual(Array.from(tabs.children, value => value.symbol), ['text.bubble', 'checkmark.circle', 'arrow.triangle.branch', 'doc.on.doc']);
   }
 });
 
@@ -232,9 +233,10 @@ test('Native fixed headings keep only branch context while readiness stays with 
   current.sections.checks = section([check(1, { conclusion: 'failure' })]);
   const api = view('en', { supportsNativeLayout: true });
   const heading = flatten(api.nativeSummary(current));
-  assert.equal(heading.length, 1);
-  assert.equal(heading[0].text, 'main ← change');
-  assert.ok(!heading.some(value => value.type === 'badge' || /CI|459|83|29 files/.test(value.text || '')));
+  assert.equal(heading[0].type, 'row');
+  assert.deepEqual(Array.from(heading.slice(1), value => value.text), ['main', '←', 'change']);
+  assert.ok(heading.filter(value => value.type === 'badge').every(value => value.tone === 'neutral' && !value.appearance));
+  assert.ok(!heading.some(value => /CI|459|83|29 files/.test(value.text || '')));
   current.tab = 'discussion';
   const discussion = api.nativeContent(current);
   const description = discussion.find(value => value.id === 'pr-description');
@@ -244,6 +246,20 @@ test('Native fixed headings keep only branch context while readiness stays with 
   assert.ok(readiness.children.some(value => value.action === 'pr-tab:checks' && value.tone === 'danger' && /failed/.test(value.text)));
   current.tab = 'files';
   assert.ok(!flatten(api.nativeContent(current)).some(value => value.id === 'pr-readiness'), 'The file reading area must not repeat discussion status cards');
+});
+
+test('Native branch context preserves full refs and avoids a dangling merge arrow', () => {
+  const current = model(), api = view('en', { supportsNativeLayout: true });
+  const head = 'fix/' + 'long-but-valid-reference-'.repeat(8);
+  current.item.head = { ref: head, label: `contributor:${head}` };
+  const branches = flatten(api.nativeSummary(current)).filter(value => value.type === 'badge');
+  assert.deepEqual(Array.from(branches, value => value.text), ['main', head]);
+  delete current.item.head;
+  assert.deepEqual(Array.from(flatten(api.nativeSummary(current)).slice(1), value => value.text), ['main']);
+  delete current.item.base;
+  assert.equal(api.nativeSummary(current).length, 0);
+  current.item.head = { label: 'contributor:feature' };
+  assert.deepEqual(Array.from(flatten(api.nativeSummary(current)).slice(1), value => value.text), ['contributor:feature']);
 });
 
 test('Native discussion distinguishes messages from activity without repeating generic badges or headings', () => {

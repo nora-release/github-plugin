@@ -653,16 +653,21 @@
     };
     function tabs(model) {
       const labels = { discussion: t('Discussion', '讨论'), checks: t('Checks', '检查'), commits: t('Commits', '提交'), files: t('Files', '文件') };
+      const symbols = { discussion: 'text.bubble', checks: 'checkmark.circle', commits: 'arrow.triangle.branch', files: 'doc.on.doc' };
       const checks = headItems(model, 'checks').length + headItems(model, 'statuses').length;
       const counts = { discussion: Number(model.item?.comments || 0), checks, commits: model.item?.commits, files: model.item?.changed_files };
       return node('tabBar', { id: 'pr-tabs' }, Object.keys(labels).map(tab => button(labels[tab], `pr-tab:${tab}`, {
-        id: `pr-tab-${tab}`, ...(model.tab === tab || tab === 'discussion' && model.tab === 'overview' ? { value: 'selected' } : {}),
+        id: `pr-tab-${tab}`, symbol: symbols[tab], ...(model.tab === tab || tab === 'discussion' && model.tab === 'overview' ? { value: 'selected' } : {}),
         ...(Number.isInteger(counts[tab]) && counts[tab] > 0 ? { subtitle: String(counts[tab]) } : {}),
       })));
     }
     function nativeSummary(model) {
-      const item = model.item || {}, branch = [item.base?.ref || item.base?.label, item.head?.ref || item.head?.label].filter(Boolean).join(' ← ');
-      return branch ? [text(branch, 'monospaced')] : [];
+      const item = model.item || {}, base = item.base?.ref || item.base?.label, head = item.head?.ref || item.head?.label;
+      return base || head ? [row([
+        ...(base ? [node('badge', { text: base, tone: 'neutral' })] : []),
+        ...(base && head ? [text('←')] : []),
+        ...(head ? [node('badge', { text: head, tone: 'neutral' })] : []),
+      ])] : [];
     }
     function nativeReadiness(model) {
       const checks = [...headItems(model, 'checks'), ...headItems(model, 'statuses')], runs = headItems(model, 'workflows');
@@ -780,7 +785,7 @@
         const firstSourceBlock = body.replace(/^(?:[ \t]*(?:\r?\n|<!--[\s\S]*?-->))+/, '').split(/\r?\n[ \t]*\r?\n/)[0];
         const firstBlock = firstSourceBlock.trim();
         const heading = /^(?:#{1,6})[ \t]+([^\r\n]+?)(?:[ \t]+#+)?$/.exec(firstBlock.split(/\r?\n/)[0]);
-        const summary = heading ? heading[1] : firstBlock;
+        const summary = (heading ? heading[1] : firstBlock).replace(/<\/?span\b[^<>]*>/gi, '');
         const suitable = summary && !/^(?: {4}|\t)/.test(firstSourceBlock) && Array.from(summary).length <= 280 && bytes(summary) <= 1024
           && !/^(?:[ \t]*[<|>#`~]|[ \t]*[-*+]\s|[ \t]*\d+[.)]\s|!?\[[^\]]*\](?:\[[^\]]*\]|:))/.test(summary)
           && !/^!\[[^\]]*\]\(/.test(summary) && !tableDivider.test(summary)
