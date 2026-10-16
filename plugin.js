@@ -1655,7 +1655,7 @@
         button(t('Connect with token', '使用 token 连接'), 'connect-token', false, { appearance: 'secondary' }),
       ]));
       children.push(button(message.manage, 'manage', false, { appearance: 'plain', symbol: 'folder.badge.gearshape' }),
-        styledText(t('Credentials stay in your Mac’s Keychain.', '账号凭据保存在你电脑的 Keychain 中。')));
+        styledText(t('Nora stores your account credentials locally on this Mac.', 'Nora 将账号凭据保存在这台 Mac 本地。')));
     }
     return node('emptyState', { id: 'connection', text: state.device ? t('Finish connecting GitHub', '完成 GitHub 连接') : message.connect,
       subtitle: state.device ? t('Enter this code on GitHub to authorize your account.', '在 GitHub 输入验证码，为你自己的账号授权。')

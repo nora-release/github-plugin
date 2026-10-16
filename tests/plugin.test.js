@@ -20,6 +20,19 @@ function repositoryIssue(url, number, title, extra = {}) {
     html_url: `https://github.com/${repository}/issues/${number}`, ...extra });
 }
 
+test('The sign-in screen describes local credential storage in both languages without Keychain or encryption claims', async () => {
+  for (const locale of ['en', 'zh-Hans']) {
+    const f = fixture({ locale });
+    const view = await f.renderReady({});
+    const copy = texts(view);
+    assert.ok(copy.includes(locale === 'en'
+      ? 'Nora stores your account credentials locally on this Mac.'
+      : 'Nora 将账号凭据保存在这台 Mac 本地。'));
+    assert.doesNotMatch(copy, /Keychain|钥匙串|encrypt|加密/i);
+    assert.equal(f.writes.length, 0);
+  }
+});
+
 test('The first sidebar row is the username menu with the real public avatar and no GitHub title', async () => {
   const f = fixture({ saved: connection, route: async (url, args) => {
     if (url.pathname === '/user') return body({ id: 1, login: 'alice', avatar_url: 'https://avatars.githubusercontent.com/u/1?v=4&s=512' });
