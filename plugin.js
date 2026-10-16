@@ -276,7 +276,8 @@
     }
     return { get current() { return model; }, reset() { ++revision; model = null; }, open, selectTab, refresh, more, jobs, setCommentDraft, postComment, prepareMerge, confirmMerge, cancelMerge, context };
   }
-  function createPullRequestView({ node, t, boundedText, displayedBody, short, itemStatus, itemDate, avatarFor = () => null, onAuthorButton = () => {}, currentUser = () => null, supportsTextEditor = true, supportsNativeLayout = false, supportsNativeDiff = false, supportsNativeTimeline = false, supportsDetailAside = false, now = () => Date.now() }) {
+  function createPullRequestView({ node, t, boundedText, displayedBody, short, itemStatus, itemDate, avatarFor = () => null, onAuthorButton = () => {}, currentUser = () => null, supportsTextEditor = true, supportsNativeLayout = false, supportsNativeDiff = false, supportsNativeTimeline = false, supportsDetailAside = false, supportsItemRowIcon = false, now = () => Date.now() }) {
+    const commitGroupIconSVG = '<svg xmlns="http://www.w3.org/2000/svg" width="32" height="32" viewBox="0 0 24 24"><g fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5"><circle cx="12" cy="12" r="3"/><path d="M9 12H3m12 0h6"/></g></svg>';
     const text = (value, textStyle = 'caption', tone = 'muted') => node('text', { text: boundedText(String(value ?? ''), 4096, '…'), textStyle, tone });
     const column = children => node('column', {}, children);
     const row = children => node('row', {}, children);
@@ -979,6 +980,7 @@
         const lastDate = relativeDate(value.entries.at(-1).entry);
         const header = nativeRow(t(`${value.entries.length} commits`, `${value.entries.length} 次提交`), '', {
           id: `pr-commit-group-header-${value.key}`, action: `pr-commits:${value.key}`, symbol: 'circle.and.line.horizontal', appearance: 'secondary', tone: 'muted',
+          ...(supportsItemRowIcon ? { iconSVG: commitGroupIconSVG } : {}),
         }, lastDate ? [text(lastDate)] : []);
         const rows = expanded ? value.entries.map((entry, offset) => activityRow(entry, `pr-group-commit-${value.key}-${offset}`)) : [];
         const card = node('column', { id: `pr-commit-group-${value.key}` }, [header, ...rows]);
@@ -2071,6 +2073,7 @@
     }),
     currentUser: () => state.user,
     supportsDetailAside: nora.features?.detailAside === true,
+    supportsItemRowIcon: nora.features?.itemRowIcon === true,
     supportsNativeTimeline: typeof nora.ui.timelineItem === 'function',
     supportsTextEditor: typeof nora.ui.textEditor === 'function', supportsNativeDiff: typeof nora.ui.diff === 'function',
     supportsNativeLayout: ['detail', 'tabBar', 'splitView', 'itemRow'].every(kind => typeof nora.ui[kind] === 'function') });

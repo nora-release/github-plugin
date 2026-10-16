@@ -16,8 +16,8 @@ const pull = issue(1, 'Keep consecutive commits together', {
 });
 const timeline = commits.map((commit, index) => ({ id: index + 101, event: 'committed', sha: commit.sha,
   message: commit.commit.message, author: { ...commit.author, date: commit.commit.author.date } }));
-function currentHost() {
-  return fixture({ saved: connection, supportsDetailAside: true,
+function currentHost(options = {}) {
+  return fixture({ saved: connection, supportsDetailAside: true, ...options,
     ownerAvatarRoute: async () => ({ status: 200, headers: { 'content-type': 'image/png' }, bodyBase64: image }),
     route: async url => {
       if (url.pathname === '/user') return body({ login: 'viewer' });
@@ -106,4 +106,21 @@ test('Opening and closing a commit group and visiting other tabs preserve the sa
   assert.equal(nodes(collapsed).find(node => node.type === 'textEditor').value, draft);
   assert.ok(f.requests.every(request => !request.method || request.method === 'GET'));
   assert.deepEqual(f.drafts, []);
+});
+
+test('The actual SDK accepts the exact supplied commit icon only when its native row capability is enabled', async () => {
+  const expected = '<svg xmlns="http://www.w3.org/2000/svg" width="32" height="32" viewBox="0 0 24 24"><g fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5"><circle cx="12" cy="12" r="3"/><path d="M9 12H3m12 0h6"/></g></svg>';
+  for (const supportsItemRowIcon of [true, false]) {
+    const f = currentHost({ supportsItemRowIcon });
+    let page = await open(f), header = groupHeader(page);
+    assert.equal(header.type, 'itemRow');
+    assert.equal(header.symbol, 'circle.and.line.horizontal');
+    assert.equal(header.iconSVG, supportsItemRowIcon ? expected : undefined);
+    assert.equal(header.appearance, 'secondary');
+    page = await f.render({ action: header.action }); header = groupHeader(page);
+    assert.equal(header.iconSVG, supportsItemRowIcon ? expected : undefined);
+    assert.equal(commitRows(page).length, 6);
+    assert.ok(f.requests.every(request => !request.method || request.method === 'GET'));
+    assert.equal(f.drafts.length, 0);
+  }
 });

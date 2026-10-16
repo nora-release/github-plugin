@@ -68,6 +68,19 @@ test('Three commits, a comment, and two commits become separate collapsed collec
   assert.equal(groups(api.nativeContent(current))[0].children.length, 1);
 });
 
+test('Only capable native hosts receive the exact supplied commit SVG and the Commits tab stays unchanged', () => {
+  const expected = '<svg xmlns="http://www.w3.org/2000/svg" width="32" height="32" viewBox="0 0 24 24"><g fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5"><circle cx="12" cy="12" r="3"/><path d="M9 12H3m12 0h6"/></g></svg>';
+  for (const supportsItemRowIcon of [true, false]) {
+    const api = view({ supportsItemRowIcon }), current = model([commit(1), commit(2)]);
+    const header = groups(api.nativeContent(current))[0].children[0];
+    assert.equal(header.symbol, 'circle.and.line.horizontal');
+    assert.equal(header.iconSVG, supportsItemRowIcon ? expected : undefined);
+    assert.equal(header.appearance, 'secondary');
+    current.tab = 'commits'; current.sections.commits = section([{ sha: sha(1), author: { login: 'first' }, commit: { message: 'Original commit message' } }]);
+    assert.ok(!flatten(api.nativeContent(current)).some(value => value.iconSVG), 'The supplied SVG is restricted to collection headers');
+  }
+});
+
 test('Collection dates are compact, localized and relative while individual commit dates remain complete', () => {
   const fixed = Date.UTC(2026, 9, 16, 12);
   for (const [seconds, english, chinese] of [[20, 'now', '刚刚'], [480, '8m', '8分钟前'], [28800, '8h', '8小时前'], [518400, '6d', '6天前'],
