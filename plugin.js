@@ -411,9 +411,13 @@
       return badge(t('Reviewed', '已审查'), 'muted', 'text.bubble');
     };
     const repository = model => section(model, 'repository').data || {};
-    const merged = item => !!(item.merged || item.merged_at);
+    const merged = item => !!(item.merged === true || item.merged_at || item.pull_request?.merged_at);
     const mergeState = item => {
-      if (merged(item)) return badge(t('Merged', '已合并'), 'accent', 'arrow.triangle.merge');
+      if (merged(item)) {
+        const status = itemStatus(item);
+        return node('badge', { text: t('Merged', '已合并'), tone: status.tone === 'purple' ? 'purple' : 'accent', symbol: 'arrow.triangle.merge',
+          ...(status.iconSVG ? { iconSVG: status.iconSVG } : {}) });
+      }
       if (item.state === 'closed') return badge(t('Closed', '已关闭'), 'danger', 'xmark.circle');
       if (item.draft) return badge(t('Draft', '草稿'), 'muted', 'circle.dashed');
       if (item.mergeable === false || item.mergeable_state === 'dirty') return badge(t('Merge conflicts', '存在合并冲突'), 'danger', 'exclamationmark.triangle');
@@ -795,7 +799,8 @@
             { symbol: failed ? 'xmark.circle' : pending || incomplete ? 'clock' : allSuccessful ? 'checkmark.circle' : 'checklist', tone: checkTone }),
           node('badge', { text: reviewsIncomplete ? t(`${reviewLabel} · partial`, `${reviewLabel} · 信息不完整`) : reviewLabel,
             symbol: 'person.crop.circle.badge.checkmark', appearance: 'plain', tone: requested ? 'danger' : reviewsIncomplete ? 'warning' : 'muted' }),
-          node('spacer'), button(merge.text, 'pr-toggle-merge', { symbol: merge.symbol, tone: merge.tone }),
+          node('spacer'), merged(model.item || {}) ? node('badge', { ...merge, appearance: 'plain' })
+            : button(merge.text, 'pr-toggle-merge', { symbol: merge.symbol, tone: merge.tone }),
         ]),
         ...(reviews.error ? [text(short(reviews.error, 256), 'caption', 'warning')] : []),
       ]);
@@ -806,7 +811,8 @@
           { action: 'pr-tab:checks', symbol: failed ? 'xmark.circle' : pending || incomplete ? 'clock' : allSuccessful ? 'checkmark.circle' : 'checklist', tone: checkTone }),
         nativeRow(reviewsIncomplete ? t(`${reviewLabel} · partial results`, `${reviewLabel} · 信息不完整`) : reviewLabel,
           reviews.error ? short(reviews.error, 256) : '', { symbol: 'person.crop.circle.badge.checkmark', tone: requested ? 'danger' : reviewsIncomplete ? 'warning' : approvals ? 'success' : 'muted' }),
-        nativeRow(merge.text, supportsNativeTimeline ? '' : t('Review merge options', '查看合并选项'), { action: 'pr-toggle-merge', symbol: merge.symbol, tone: merge.tone }),
+        nativeRow(merge.text, supportsNativeTimeline ? '' : t('Review merge options', '查看合并选项'), { action: 'pr-toggle-merge', symbol: merge.symbol, tone: merge.tone,
+          ...(supportsItemRowIcon && merge.iconSVG ? { iconSVG: merge.iconSVG } : {}) }),
       ]);
     }
     function nativeAside(model) {
@@ -861,7 +867,8 @@
         contextSection('reviewers', t('Reviewers', '审查人'), reviewRows), node('divider'),
         contextSection('comments', t('Comments', '留言'), commentRows), node('divider'),
         contextSection('checks', t('Checks', '检查'), checkRows), node('divider'),
-        contextSection('merge', t('Merge status', '合并状态'), [nativeRow(merge.text, '', { action: 'pr-toggle-merge', symbol: merge.symbol, tone: merge.tone }),
+        contextSection('merge', t('Merge status', '合并状态'), [nativeRow(merge.text, '', { action: 'pr-toggle-merge', symbol: merge.symbol, tone: merge.tone,
+          ...(supportsItemRowIcon && merge.iconSVG ? { iconSVG: merge.iconSVG } : {}) }),
           ...(repository(model).archived ? [text(t('Repository is archived', '仓库已归档'))] : [])]),
       ])];
     }
@@ -1726,7 +1733,8 @@
   }
   function itemStatus(item) {
     const isPullRequest = state.kind === 'pulls';
-    if (item.merged_at || item.pull_request?.merged_at) return { text: t('Merged', '已合并'), symbol: 'arrow.triangle.merge', tone: 'accent', iconSVG: pullRequestIcons.merged };
+    if (item.merged === true || item.merged_at || item.pull_request?.merged_at) return { text: t('Merged', '已合并'), symbol: 'arrow.triangle.merge',
+      tone: nora.features?.purpleTone === true ? 'purple' : 'accent', iconSVG: pullRequestIcons.merged };
     if (item.state === 'closed') return { text: t('Closed', '已关闭'), symbol: isPullRequest ? 'xmark.circle' : 'checkmark.circle', tone: isPullRequest ? 'danger' : 'accent',
       ...(isPullRequest ? { iconSVG: pullRequestIcons.closed } : {}) };
     if (item.draft) return { text: t('Draft', '草稿'), symbol: 'circle.dashed', tone: 'muted',

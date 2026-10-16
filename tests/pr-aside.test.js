@@ -42,6 +42,18 @@ test('The context column follows the reference sections and only exposes existin
   assert.ok(!nodes.some(node => /^(?:pr-merge:|pr-confirm-merge|pr-comment$)/.test(node.action || '')));
 });
 
+test('A merged context retains its semantic status when a caller supplies no custom status icon', () => {
+  const current = model(); current.item.merged = true; current.item.state = 'closed'; current.item.draft = true;
+  for (const tone of ['success', 'accent', 'purple']) {
+    const api = view({ supportsItemRowIcon: true, itemStatus: () => ({ text: 'Open', tone }) });
+    const merge = flatten(api.nativeAside(current)).find(node => node.type === 'itemRow' && node.text === 'Merged');
+    assert.ok(merge);
+    assert.equal(merge.tone, tone === 'purple' ? 'purple' : 'accent');
+    assert.equal(merge.symbol, 'arrow.triangle.merge');
+    assert.equal(merge.iconSVG, undefined);
+  }
+});
+
 test('Reviewers preserve participant avatar tracking and distinguish requested, approved and changes requested states', () => {
   const current = model(), tracked = new WeakMap(), api = view({ onAuthorButton: (node, user) => tracked.set(node, user) });
   current.sections.reviews = section([

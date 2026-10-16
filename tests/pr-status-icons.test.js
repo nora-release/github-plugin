@@ -52,7 +52,7 @@ for (const [kind, extra, label, tone, symbol] of [
 }
 
 test('Merged PRs use the exact provided SVG in the sidebar and heading ahead of closed or draft states', async () => {
-  for (const extra of [{ merged_at: '2026-10-14' }, { pull_request: { merged_at: '2026-10-14' } }]) {
+  for (const extra of [{ merged: true }, { merged_at: '2026-10-14' }, { pull_request: { merged_at: '2026-10-14' } }]) {
     const item = pull(7, { state: 'closed', draft: true, ...extra });
     const f = fixture({ saved: connection, route: async url => basics(url) || body(url.pathname === '/issues' ? [item] : item) });
     await f.renderReady({});
@@ -66,6 +66,48 @@ test('Merged PRs use the exact provided SVG in the sidebar and heading ahead of 
       assert.equal(badge.iconSVG, expectedIcons.merged);
       assert.ok(Buffer.byteLength(badge.iconSVG) < 16 * 1024);
     }
+  }
+});
+
+test('Merged status keeps the supplied SVG throughout context and readiness views while older item rows retain their fallback', async () => {
+  const item = pull(7, { state: 'closed', draft: true, merged: true,
+    head: { sha: 'a'.repeat(40), ref: 'feature' }, base: { ref: 'main' }, comments: 0, review_comments: 0 });
+  for (const [supportsDetailAside, supportsItemRowIcon, supportsTimeline, supportsPurpleTone] of [
+    [true, true, true, true], [true, false, true, true], [false, true, true, true], [false, false, true, true],
+    [false, true, false, true], [false, false, false, true],
+    [true, true, true, false], [false, true, true, false], [false, true, false, false],
+  ]) {
+    const f = fixture({ saved: connection, supportsDetailAside, supportsItemRowIcon, supportsPurpleTone,
+      unavailableViewKinds: supportsTimeline ? [] : ['timelineItem'], route: async url => {
+        const basic = basics(url); if (basic) return basic;
+        if (url.pathname === '/issues') return body([item]);
+        if (url.pathname === '/repos/alice/project/pulls/7') return body(item);
+        if (url.pathname === '/repos/alice/project') return body({ permissions: { push: false } });
+        if (url.pathname.endsWith('/check-runs')) return body({ check_runs: [] });
+        if (url.pathname.endsWith('/status')) return body({ statuses: [] });
+        if (url.pathname.endsWith('/actions/runs')) return body({ workflow_runs: [] });
+        return body([]);
+      } });
+    await f.renderReady({}); await f.render({ action: 'kind:pulls' });
+    const selected = await f.render({ action: 'item:item-alice/project/7' });
+    for (const badge of [selected.children[0].items[0].children[0], detailBadge(selected)]) {
+      assert.equal(badge.text, 'Merged');
+      assert.equal(badge.tone, supportsPurpleTone ? 'purple' : 'accent');
+      assert.equal(badge.iconSVG, expectedIcons.merged);
+    }
+    const context = nodes(selected).find(node => node.id === (supportsDetailAside ? 'pr-aside-merge' : 'pr-readiness'));
+    assert.ok(context);
+    const merge = nodes(context).find(node => node.text === 'Merged');
+    assert.ok(merge);
+    assert.equal(merge.type, supportsDetailAside || !supportsTimeline ? 'itemRow' : 'badge');
+    assert.equal(merge.tone, supportsPurpleTone ? 'purple' : 'accent');
+    assert.equal(merge.symbol, 'arrow.triangle.merge');
+    assert.equal(merge.iconSVG, merge.type === 'badge' || supportsItemRowIcon ? expectedIcons.merged : undefined);
+    assert.ok(nodes(selected).filter(node => node.type === 'itemRow' && node.text === 'Merged')
+      .every(node => supportsItemRowIcon ? node.iconSVG === expectedIcons.merged : !Object.hasOwn(node, 'iconSVG')));
+    assert.ok(!nodes(selected).some(node => node.type === 'button' && node.text === 'Merged'));
+    assert.ok(f.requests.every(request => !request.method || request.method === 'GET'));
+    assert.equal(f.writes.length, 0);
   }
 });
 

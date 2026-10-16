@@ -9,17 +9,17 @@ importers:
   .:
     devDependencies:
       '@nora/plugin-kit':
-        specifier: github:nora-release/plugin-kit#v0.15.0
-        version: https://codeload.github.com/nora-release/plugin-kit/tar.gz/3069a0585c822d855538e9740c956a5163883f72
+        specifier: github:nora-release/plugin-kit#v0.16.0
+        version: https://codeload.github.com/nora-release/plugin-kit/tar.gz/0b49143e0427045db2a53fd541d79b77bfaee2cc
 
 packages:
 
-  '@nora/plugin-kit@https://codeload.github.com/nora-release/plugin-kit/tar.gz/3069a0585c822d855538e9740c956a5163883f72':
-    resolution: {gitHosted: true, integrity: sha512-ui/K+T7vW/Wg6dYVfkf0+0Jxsl6e3JY9asoX8aUtwNDfme3Sd6l07B9vQBmH8u7fTtQYy/HNQrxaLbj/KR05BA==, tarball: https://codeload.github.com/nora-release/plugin-kit/tar.gz/3069a0585c822d855538e9740c956a5163883f72}
-    version: 0.15.0
+  '@nora/plugin-kit@https://codeload.github.com/nora-release/plugin-kit/tar.gz/0b49143e0427045db2a53fd541d79b77bfaee2cc':
+    resolution: {gitHosted: true, integrity: sha512-EyikkeDZle+TgGu+FdgEVB+Xef1IT9yRSk7tLR+gnPISTswCQkGPLIP4oI6E/4kZR9CmP69xyJXET9bT7l0JmQ==, tarball: https://codeload.github.com/nora-release/plugin-kit/tar.gz/0b49143e0427045db2a53fd541d79b77bfaee2cc}
+    version: 0.16.0
     engines: {node: '>=24'}
     hasBin: true
 
 snapshots:
 
-  '@nora/plugin-kit@https://codeload.github.com/nora-release/plugin-kit/tar.gz/3069a0585c822d855538e9740c956a5163883f72': {}
+  '@nora/plugin-kit@https://codeload.github.com/nora-release/plugin-kit/tar.gz/0b49143e0427045db2a53fd541d79b77bfaee2cc': {}
