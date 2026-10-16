@@ -6,6 +6,7 @@ const expectedIcons = {
   open: '<svg xmlns="http://www.w3.org/2000/svg" width="32" height="32" viewBox="0 0 24 24"><!-- Icon from Huge Icons by Hugeicons - undefined --><g fill="none" stroke="currentColor" stroke-width="1.5"><path stroke-linecap="round" stroke-linejoin="round" d="M6 8v8m12 0v-4c0-2.828 0-4.243-.879-5.121C16.243 6 14.828 6 12 6h-1m0 0c0-.7 1.994-2.008 2.5-2.5M11 6c0 .7 1.994 2.008 2.5 2.5"/><circle cx="6" cy="18" r="2"/><circle cx="6" cy="6" r="2"/><circle cx="18" cy="18" r="2"/></g></svg>',
   draft: '<svg xmlns="http://www.w3.org/2000/svg" width="32" height="32" viewBox="0 0 24 24"><!-- Icon from Huge Icons by Hugeicons - undefined --><g fill="none" stroke="currentColor" stroke-width="1.5"><path stroke-linecap="round" stroke-linejoin="round" d="M6 8v8"/><circle cx="6" cy="18" r="2"/><circle cx="6" cy="6" r="2"/><circle cx="18" cy="18" r="2"/><path stroke-linecap="round" d="M18.125 11H18m.25 0a.25.25 0 1 1-.5 0a.25.25 0 0 1 .5 0Zm-.125-5H18m.25 0a.25.25 0 1 1-.5 0a.25.25 0 0 1 .5 0Z"/></g></svg>',
   closed: '<svg xmlns="http://www.w3.org/2000/svg" width="32" height="32" viewBox="0 0 24 24"><!-- Icon from Huge Icons by Hugeicons - undefined --><g fill="none" stroke="currentColor" stroke-width="1.5"><path stroke-linecap="round" stroke-linejoin="round" d="M6 8v8m12-5v5"/><circle cx="6" cy="18" r="2"/><circle cx="6" cy="6" r="2"/><circle cx="18" cy="18" r="2"/><path stroke-linecap="round" stroke-linejoin="round" d="m20 4l-2 2m0 0l-2 2m2-2l2 2m-2-2l-2-2"/></g></svg>',
+  merged: '<svg xmlns="http://www.w3.org/2000/svg" width="32" height="32" viewBox="0 0 24 24"><!-- Icon from Huge Icons by Hugeicons - undefined --><g fill="none" stroke="currentColor" stroke-width="1.5"><path d="M7 20a2 2 0 1 0 0-4a2 2 0 0 0 0 4ZM7 8a2 2 0 1 0 0-4a2 2 0 0 0 0 4Zm10 6a2 2 0 1 0 0-4a2 2 0 0 0 0 4Z"/><path stroke-linecap="round" stroke-linejoin="round" d="M7.021 8.28v7.127m7.39-3.402H10.02c-1.097 0-3.157-.88-3-3.225"/></g></svg>',
 };
 const basics = url => url.pathname === '/user' ? body({ login: 'alice' }) : url.pathname === '/user/repos' ? body([]) : null;
 const pull = (number, extra = {}) => issue(number, `PR ${number}`, { pull_request: {}, ...extra });
@@ -50,19 +51,20 @@ for (const [kind, extra, label, tone, symbol] of [
   });
 }
 
-test('Merged PRs retain their merge symbol and take precedence over closed or draft SVGs', async () => {
+test('Merged PRs use the exact provided SVG in the sidebar and heading ahead of closed or draft states', async () => {
   for (const extra of [{ merged_at: '2026-10-14' }, { pull_request: { merged_at: '2026-10-14' } }]) {
     const item = pull(7, { state: 'closed', draft: true, ...extra });
     const f = fixture({ saved: connection, route: async url => basics(url) || body(url.pathname === '/issues' ? [item] : item) });
     await f.renderReady({});
-    await f.render({ action: 'kind:pulls' });
+    const overview = await f.render({ action: 'kind:pulls' });
     const selected = await f.render({ action: 'item:item-alice/project/7' });
     assertHeading(selected, item, 'PR', 'Merged');
-    for (const badge of [selected.children[0].items[0].children[0], detailBadge(selected)]) {
+    for (const badge of [overview.children[0].items[0].children[0], selected.children[0].items[0].children[0], detailBadge(selected)]) {
       assert.equal(badge.text, 'Merged');
       assert.equal(badge.tone, 'accent');
       assert.equal(badge.symbol, 'arrow.triangle.merge');
-      assert.equal(badge.iconSVG, undefined);
+      assert.equal(badge.iconSVG, expectedIcons.merged);
+      assert.ok(Buffer.byteLength(badge.iconSVG) < 16 * 1024);
     }
   }
 });
