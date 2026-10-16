@@ -272,7 +272,7 @@
     }
     return { get current() { return model; }, reset() { ++revision; model = null; }, open, selectTab, refresh, more, jobs, setCommentDraft, postComment, prepareMerge, confirmMerge, cancelMerge, context };
   }
-  function createPullRequestView({ node, t, boundedText, displayedBody, short, itemStatus, itemDate, avatarFor = () => null, onAuthorButton = () => {}, currentUser = () => null, supportsTextEditor = true, supportsNativeLayout = false, supportsNativeDiff = false, supportsNativeTimeline = false }) {
+  function createPullRequestView({ node, t, boundedText, displayedBody, short, itemStatus, itemDate, avatarFor = () => null, onAuthorButton = () => {}, currentUser = () => null, supportsTextEditor = true, supportsNativeLayout = false, supportsNativeDiff = false, supportsNativeTimeline = false, supportsDetailAside = false }) {
     const text = (value, textStyle = 'caption', tone = 'muted') => node('text', { text: boundedText(String(value ?? ''), 4096, '…'), textStyle, tone });
     const column = children => node('column', {}, children);
     const row = children => node('row', {}, children);
@@ -280,6 +280,8 @@
     const button = (label, action, properties = {}) => node('button', { text: short(label, 256), action, appearance: 'plain', ...properties });
     const section = (model, name) => model.sections?.[name] || model[name] || { items: [], loaded: false, loading: false, error: '', nextPage: null };
     const items = (model, name) => Array.isArray(section(model, name).items) ? section(model, name).items : [];
+    const referenceLayout = supportsDetailAside && supportsNativeLayout && supportsNativeTimeline;
+    const hasDetailAside = model => referenceLayout && !!model.sections && (!model.tab || ['discussion', 'overview'].includes(model.tab));
     const prURL = model => `https://github.com/${model.repo}/pull/${model.number}`;
     const safeURL = (url, fallback) => typeof url === 'string' && /^https:\/\/github\.com\/(?!\/)[^\s\\]+$/.test(url) ? url : fallback;
     const openAction = (url, fallback) => {
@@ -332,7 +334,8 @@
     const fit = (model, header, cards, footer, suffix, preferRecent = false, reservedNodes = 0) => {
       const overflow = [badge(t('More activity is available on GitHub.', '还有更多内容，可在 GitHub 查看。'), 'muted'), open(model, t('View complete history', '查看完整内容'), prURL(model) + suffix, suffix)];
       const fixed = [...header, ...footer, ...overflow];
-      let nodes = reservedNodes + fixed.reduce((sum, value) => sum + countNodes(value), 0), size = encodedSize(fixed);
+      const aside = hasDetailAside(model) ? nativeAside(model) : [];
+      let nodes = reservedNodes + aside.reduce((sum, value) => sum + countNodes(value), 0) + fixed.reduce((sum, value) => sum + countNodes(value), 0), size = encodedSize([...fixed, ...aside]);
       const kept = [];
       for (const card of preferRecent ? cards.slice().reverse() : cards) {
         const nextNodes = countNodes(card), nextSize = encodedSize([card]);
@@ -663,6 +666,10 @@
     }
     function nativeSummary(model) {
       const item = model.item || {}, base = item.base?.ref || item.base?.label, head = item.head?.ref || item.head?.label;
+      if (referenceLayout && model.sections) return [node('row', { id: 'pr-author-context' }, [
+        authorButton(model, item, prURL(model)), ...(date(item) ? [text(date(item))] : []),
+        ...(head || base ? [node('text', { id: 'pr-branch-context', text: [head, base].filter(Boolean).join(' → '), textStyle: 'monospaced', tone: 'muted' })] : []),
+      ])];
       return base || head ? [row([
         ...(base ? [node('badge', { text: base, tone: 'neutral' })] : []),
         ...(base && head ? [text('←')] : []),
@@ -713,9 +720,68 @@
         nativeRow(merge.text, supportsNativeTimeline ? '' : t('Review merge options', '查看合并选项'), { action: 'pr-toggle-merge', symbol: merge.symbol, tone: merge.tone }),
       ]);
     }
+    function nativeAside(model) {
+      if (!hasDetailAside(model)) return [];
+      const item = model.item || {};
+      const incomplete = name => { const value = section(model, name); return !value.loaded || value.loading || value.error || value.nextPage || value.notice; };
+      const contextSection = (id, label, children) => node('column', { id: `pr-aside-${id}` }, [text(label), ...children]);
+      const changes = [row([
+        button(Number.isInteger(item.changed_files) ? t(`${item.changed_files} files`, `${item.changed_files} 个文件`) : t('View files', '查看文件'), 'pr-tab:files', { symbol: 'doc.on.doc', tone: 'neutral' }),
+        node('spacer'), ...(Number.isInteger(item.additions) ? [text(`+${item.additions}`, 'caption', 'success')] : []),
+        ...(Number.isInteger(item.deletions) ? [text(`−${item.deletions}`, 'caption', 'danger')] : []),
+      ])];
+      const reviewers = new Map();
+      for (const review of items(model, 'reviews').slice().sort((a, b) => String(a.submitted_at || '').localeCompare(String(b.submitted_at || '')))) {
+        if (!review.user?.login) continue;
+        const key = review.user.login.toLowerCase(), previous = reviewers.get(key), state = String(review.state || '').toUpperCase();
+        if (state === 'COMMENTED' && previous && ['APPROVED', 'CHANGES_REQUESTED', 'DISMISSED'].includes(previous.state)) continue;
+        reviewers.set(key, { account: review.user, state });
+      }
+      for (const account of Array.isArray(item.requested_reviewers) ? item.requested_reviewers : []) {
+        if (account?.login) reviewers.set(account.login.toLowerCase(), { account, state: 'REQUESTED' });
+      }
+      const reviewRows = [...reviewers.values()].slice(0, 6).map(review => row([
+        authorButton(model, { user: review.account }, prURL(model)), node('spacer'),
+        review.state === 'REQUESTED' ? badge(t('Requested', '待审查'), 'muted', 'circle') : reviewState(review.state),
+      ]));
+      const teams = (Array.isArray(item.requested_teams) ? item.requested_teams : []).filter(team => typeof (team?.name || team?.slug) === 'string').slice(0, 3);
+      reviewRows.push(...teams.map(team => row([text(short(team.name || team.slug, 80), 'caption', 'neutral'), node('spacer'), badge(t('Requested', '待审查'), 'muted', 'person.2')])));
+      if (!reviewRows.length) reviewRows.push(text(incomplete('reviews') ? t('Reviewers not available yet', '审查人信息尚未获取') : t('No reviewers', '暂无审查人')));
+      if (reviewers.size > 6 || (item.requested_teams || []).length > 3) reviewRows.push(open(model, t('View all reviewers', '查看所有审查人'), prURL(model)));
+      if (incomplete('reviews')) reviewRows.push(text(t('Review information is incomplete', '审查信息不完整'), 'caption', 'warning'));
+      const commentRows = [];
+      for (const [key, name, en, zh] of [['comments', 'comments', 'discussion comments', '条讨论留言'], ['review_comments', 'reviewComments', 'code comments', '条代码留言']]) {
+        const known = Number.isInteger(item[key]) && item[key] >= 0, count = known ? item[key] : items(model, name).length;
+        if (known || section(model, name).loaded || count) commentRows.push(button(known ? t(`${count} ${en}`, `${count} ${zh}`) : t(`${count} loaded ${en}`, `已加载 ${count} ${zh}`), 'pr-tab:discussion', { symbol: 'text.bubble', tone: 'neutral' }));
+      }
+      if (!commentRows.length) commentRows.push(text(t('Comments not loaded', '留言尚未加载')));
+      if (['comments', 'reviewComments'].some(incomplete)) commentRows.push(text(t('Comment history is incomplete', '留言记录不完整'), 'caption', 'warning'));
+      const checks = [...headItems(model, 'checks'), ...headItems(model, 'statuses')];
+      const results = checks.length ? checks : headItems(model, 'workflows');
+      const priority = entry => { const tone = status(entry).tone; return tone === 'danger' ? 0 : tone === 'warning' ? 1 : 2; };
+      const checkRows = results.slice().sort((a, b) => priority(a) - priority(b)).slice(0, 6).map((entry, index) => nativeRow(short(entry.name || entry.context || t('Check', '检查'), 160), '', {
+        id: `pr-aside-check-${index}`, action: 'pr-tab:checks', symbol: status(entry).symbol, tone: status(entry).tone,
+      }));
+      const ciIncomplete = ['checks', 'statuses', 'workflows'].some(incomplete);
+      if (!checkRows.length) checkRows.push(text(ciIncomplete ? t('Checks not available yet', '检查信息尚未获取') : t('No checks reported', '暂无检查记录')));
+      if (ciIncomplete) checkRows.push(text(t('Check results are incomplete', '检查信息不完整'), 'caption', 'warning'));
+      if (results.length > 6 || ciIncomplete) checkRows.push(button(t('View all checks', '查看全部检查'), 'pr-tab:checks', { symbol: 'chevron.right' }));
+      const merge = mergeState(item);
+      return [node('column', { id: 'pr-context-aside' }, [
+        contextSection('changes', t('Changes', '变更'), changes), node('divider'),
+        contextSection('reviewers', t('Reviewers', '审查人'), reviewRows), node('divider'),
+        contextSection('comments', t('Comments', '留言'), commentRows), node('divider'),
+        contextSection('checks', t('Checks', '检查'), checkRows), node('divider'),
+        contextSection('merge', t('Merge status', '合并状态'), [nativeRow(merge.text, '', { action: 'pr-toggle-merge', symbol: merge.symbol, tone: merge.tone }),
+          ...(repository(model).archived ? [text(t('Repository is archived', '仓库已归档'))] : [])]),
+      ])];
+    }
     function nativeDescription(model, sourceURL = prURL(model), id = 'pr-description') {
       const labels = (Array.isArray(model.item?.labels) ? model.item.labels : []).map(label => typeof label === 'string' ? label : label?.name).filter(label => typeof label === 'string' && label);
       const created = date(model.item || {});
+      if (referenceLayout && model.sections) return node('column', { id }, [
+        ...(labels.length ? [text(labels.join(' · '))] : []), node('markdown', { text: displayedBody(model.item?.body) }),
+      ]);
       if (supportsNativeTimeline) return node('timelineItem', { id, value: 'comment' }, [
         authorButton(model, model.item || {}, sourceURL),
         row([...(created ? [text(t(`opened ${created}`, `创建于 ${created}`))] : []), node('spacer')]),
@@ -820,11 +886,13 @@
       });
       const footer = sources.flatMap(([name, label]) => sectionState(model, name, label));
       if (activity.length > 80) footer.push(text(t('Showing part of the loaded history. View the full conversation on GitHub.', '这里只显示部分已加载记录，完整讨论可在 GitHub 查看。')));
-      footer.push(nativeReadiness(model), ...nativeCommentComposer(model));
-      const fitted = fit(model, [nativeDescription(model)], cards, footer, '', true, 1);
-      const end = fitted.findIndex(value => value.type !== 'timelineItem' || value.id === 'pr-comment-composer');
+      if (!hasDetailAside(model)) footer.push(nativeReadiness(model));
+      footer.push(...nativeCommentComposer(model));
+      const fitted = fit(model, hasDetailAside(model) ? [nativeDescription(model), node('divider'), text(t('Activity', '动态'), 'headline', 'neutral')] : [nativeDescription(model)], cards, footer, '', true, 1);
+      const start = hasDetailAside(model) ? 3 : 0;
+      const end = fitted.findIndex((value, index) => index >= start && (value.type !== 'timelineItem' || value.id === 'pr-comment-composer'));
       const threadEnd = end < 0 ? fitted.length : end;
-      return [node('column', { id: 'pr-conversation' }, fitted.slice(0, threadEnd)), ...fitted.slice(threadEnd)];
+      return [...fitted.slice(0, start), node('column', { id: 'pr-conversation' }, fitted.slice(start, threadEnd)), ...fitted.slice(threadEnd)];
     }
     function nativeCommentComposer(model) {
       const children = commentActions(model).filter(value => value.type !== 'divider');
@@ -990,7 +1058,7 @@
       if (model.mergeExpanded || model.merge?.pending) body.unshift(node('column', { id: 'pr-merge-options', appearance: 'secondary' }, mergeActions(model)));
       return body;
     }
-    return { summary, content, actions, tabs, nativeSummary, nativeContent, nativeDescription, workflow, supportsNativeLayout };
+    return { summary, content, actions, tabs, nativeSummary, nativeContent, nativeDescription, nativeAside, workflow, supportsNativeLayout };
   }
   const panelID = 'com.nora.github.panel';
   const clientID = 'Iv23liPZy7EARoSnYoYy';
@@ -1759,7 +1827,8 @@
           : isPR ? pullView.nativeContent(model) : [pullView.nativeDescription(model, item.html_url, 'issue-description'),
             button(t('View discussion on GitHub', '在 GitHub 查看讨论'), 'open-item', false, { appearance: 'plain', symbol: 'text.bubble' })];
       const tabs = isPR ? pullView.tabs(model) : node('tabBar', { id: 'issue-tabs' }, [node('button', { id: 'issue-tab-description', text: t('Overview', '概览'), value: 'selected' })]);
-      return node('detail', { id: 'item-details' }, [toolbar, summary, tabs, ...body]);
+      const aside = isPR && !state.detailLoading && !state.detailError ? pullView.nativeAside(model) : [];
+      return node('detail', { id: 'item-details', ...(aside.length ? { items: aside } : {}) }, [toolbar, summary, tabs, ...body]);
     }
     const children = [
       node('toolbar', {}, [styledText(`${itemRepository(item)} · ${state.kind === 'pulls' ? 'PR' : 'Issue'} #${item.number}`, 'monospaced'),
@@ -1900,6 +1969,7 @@
         !pullDetails.current?.sections.commits.items.some(commit => commit.sha?.toLowerCase() === entry.sha.toLowerCase()),
     }),
     currentUser: () => state.user,
+    supportsDetailAside: nora.features?.detailAside === true,
     supportsNativeTimeline: typeof nora.ui.timelineItem === 'function',
     supportsTextEditor: typeof nora.ui.textEditor === 'function', supportsNativeDiff: typeof nora.ui.diff === 'function',
     supportsNativeLayout: ['detail', 'tabBar', 'splitView', 'itemRow'].every(kind => typeof nora.ui[kind] === 'function') });

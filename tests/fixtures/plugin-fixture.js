@@ -11,7 +11,7 @@ const repo = (name = 'alice/project', id = 1) => ({ id, full_name: name, private
 const issue = (number, title, extra = {}) => ({ id: number, number, title, body: 'Description', state: 'open', user: { login: 'alice' }, html_url: `https://github.com/alice/project/issues/${number}`, repository_url: 'https://api.github.com/repos/alice/project', ...extra });
 const nodes = view => [view, ...(view.children || []).flatMap(nodes), ...(view.items || []).flatMap(nodes)];
 const texts = view => nodes(view).flatMap(node => [node.text, node.subtitle].filter(Boolean)).join('\n');
-function fixture({ saved = null, locale = 'en', unavailableViewKinds = [], supportsPanelInvalidation = true, now = () => Date.now(), beforeRead = async () => {}, beforeSave = async () => {}, onInvalidate = () => true, ownerAvatarRoute = null, route = async url => {
+function fixture({ saved = null, locale = 'en', unavailableViewKinds = [], supportsPanelInvalidation = true, supportsDetailAside = false, now = () => Date.now(), beforeRead = async () => {}, beforeSave = async () => {}, onInvalidate = () => true, ownerAvatarRoute = null, route = async url => {
   if (url.pathname === '/user') return body({ login: 'alice' });
   if (url.pathname === '/user/repos') return body([repo()]);
   const scoped = /^\/repos\/([^/]+\/[^/]+)\/(issues|pulls)(?:\/([1-9][0-9]*))?$/.exec(url.pathname);
@@ -58,9 +58,10 @@ function fixture({ saved = null, locale = 'en', unavailableViewKinds = [], suppo
     throw new Error(`Unexpected method: ${method}`);
   };
   class ClockDate extends Date { static now() { return now(); } }
-  const context = vm.createContext({ request, locale, Date: ClockDate, unavailableViewKinds });
+  const context = vm.createContext({ request, locale, Date: ClockDate, unavailableViewKinds, supportsDetailAside });
   const hostSDK = sdk.replace('Object.fromEntries(kinds.map(type =>', 'Object.fromEntries(kinds.filter(type => !unavailableViewKinds.includes(type)).map(type =>')
-    .replace('panels: Object.freeze(', supportsPanelInvalidation ? 'panels: Object.freeze(' : 'unavailablePanels: Object.freeze(');
+    .replace('panels: Object.freeze(', supportsPanelInvalidation ? 'panels: Object.freeze(' : 'unavailablePanels: Object.freeze(')
+    .replace('detailAside: true', 'detailAside: supportsDetailAside');
   vm.runInContext(`${hostSDK}\nglobalThis.api = createNoraPluginAPI(request, locale);\n${plugin}`, context);
   const render = async (event = {}) => {
     const actionCapability = typeof event.action === 'string' && event.action.trim() ? randomUUID() : undefined;
