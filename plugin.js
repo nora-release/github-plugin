@@ -748,13 +748,17 @@
         [...(elapsed ? [text(elapsed, 'monospaced')] : []), ...trailing]);
     };
     function tabs(model) {
-      const labels = { discussion: t('Discussion', '讨论'), checks: t('Checks', '检查'), commits: t('Commits', '提交'), files: t('Files', '文件') };
-      const symbols = { discussion: 'text.bubble', checks: 'checkmark.circle', commits: 'arrow.triangle.branch', files: 'doc.on.doc' };
+      const labels = { discussion: t('Discussion', '讨论'), commits: t('Commits', '提交'), checks: t('Checks', '检查'), files: t('Files', '文件') };
+      const symbols = { discussion: 'text.bubble', checks: 'checkmark.circle', commits: 'circle.and.line.horizontal', files: 'doc.on.doc' };
       const checks = headItems(model, 'checks').length + headItems(model, 'statuses').length;
-      const counts = { discussion: Number(model.item?.comments || 0), checks, commits: model.item?.commits, files: model.item?.changed_files };
+      const checksComplete = ['checks', 'statuses'].every(name => {
+        const value = section(model, name);
+        return value.loaded && !value.loading && !value.error && !value.nextPage && !value.notice;
+      });
+      const counts = { discussion: model.item?.comments, checks: checks || checksComplete ? checks : undefined, commits: model.item?.commits, files: model.item?.changed_files };
       return node('tabBar', { id: 'pr-tabs' }, Object.keys(labels).map(tab => button(labels[tab], `pr-tab:${tab}`, {
         id: `pr-tab-${tab}`, symbol: symbols[tab], ...(model.tab === tab || tab === 'discussion' && model.tab === 'overview' ? { value: 'selected' } : {}),
-        ...(Number.isInteger(counts[tab]) && counts[tab] > 0 ? { subtitle: String(counts[tab]) } : {}),
+        ...(Number.isInteger(counts[tab]) && counts[tab] >= 0 ? { subtitle: String(counts[tab]) } : {}),
       })));
     }
     function nativeReadiness(model) {
@@ -832,6 +836,25 @@
       if (!reviewRows.length) reviewRows.push(text(incomplete('reviews') ? t('Reviewers not available yet', '审查人信息尚未获取') : t('No reviewers', '暂无审查人')));
       if (reviewers.size > 6 || (item.requested_teams || []).length > 3) reviewRows.push(open(model, t('View all reviewers', '查看所有审查人'), prURL(model)));
       if (incomplete('reviews')) reviewRows.push(text(t('Review information is incomplete', '审查信息不完整'), 'caption', 'warning'));
+      const assignees = new Map();
+      const assigned = Array.isArray(item.assignees) ? item.assignees : item.assignee ? [item.assignee] : [];
+      for (const account of assigned) {
+        if (typeof account?.login === 'string' && account.login.trim()) assignees.set(account.login.toLowerCase(), account);
+      }
+      const assigneeRows = [...assignees.values()].slice(0, 6).map(account => authorButton(model, { user: account }, prURL(model)));
+      const assigneesEmpty = Array.isArray(item.assignees) ? !item.assignees.length : item.assignee === null;
+      if (!assigneeRows.length) assigneeRows.push(text(assigneesEmpty
+        ? t('No assignees', '暂无负责人') : t('Assignees not available', '负责人信息尚未获取')));
+      if (assignees.size > 6) assigneeRows.push(open(model, t('View all assignees', '查看所有负责人'), prURL(model)));
+      const labels = [...new Set((Array.isArray(item.labels) ? item.labels : [])
+        .map(label => typeof label === 'string' ? label : label?.name).filter(label => typeof label === 'string' && label.trim()))];
+      const labelRows = labels.slice(0, 8).map(label => badge(short(label, 128), 'muted'));
+      if (!labelRows.length) labelRows.push(text(Array.isArray(item.labels) && !item.labels.length
+        ? t('No labels', '暂无标签') : t('Labels not available', '标签信息尚未获取')));
+      if (labels.length > 8) labelRows.push(open(model, t('View all labels', '查看所有标签'), prURL(model)));
+      const milestoneRows = typeof item.milestone?.title === 'string' && item.milestone.title.trim()
+        ? [open(model, short(item.milestone.title, 160), item.milestone.html_url, '', { symbol: 'flag', tone: 'neutral' })]
+        : [text(item.milestone === null ? t('No milestone', '暂无里程碑') : t('Milestone not available', '里程碑信息尚未获取'))];
       const commentRows = [];
       for (const [key, name, en, zh] of [['comments', 'comments', 'discussion comments', '条讨论留言'], ['review_comments', 'reviewComments', 'code comments', '条代码留言']]) {
         const known = Number.isInteger(item[key]) && item[key] >= 0, count = known ? item[key] : items(model, name).length;
@@ -851,8 +874,11 @@
       if (results.length > 6 || ciIncomplete) checkRows.push(button(t('View all checks', '查看全部检查'), 'pr-tab:checks', { symbol: 'chevron.right' }));
       const merge = mergeState(item);
       return [node('column', { id: 'pr-context-aside' }, [
-        contextSection('changes', t('Changes', '变更'), changes), node('divider'),
         contextSection('reviewers', t('Reviewers', '审查人'), reviewRows), node('divider'),
+        contextSection('assignees', t('Assignees', '负责人'), assigneeRows), node('divider'),
+        contextSection('labels', t('Labels', '标签'), labelRows), node('divider'),
+        contextSection('milestone', t('Milestone', '里程碑'), milestoneRows), node('divider'),
+        contextSection('changes', t('Changes', '变更'), changes), node('divider'),
         contextSection('comments', t('Comments', '留言'), commentRows), node('divider'),
         contextSection('checks', t('Checks', '检查'), checkRows), node('divider'),
         contextSection('merge', t('Merge status', '合并状态'), [nativeRow(merge.text, '', { action: 'pr-toggle-merge', symbol: merge.symbol, tone: merge.tone,
@@ -863,14 +889,16 @@
     function nativeDescription(model, sourceURL = prURL(model), id = 'pr-description') {
       const labels = (Array.isArray(model.item?.labels) ? model.item.labels : []).map(label => typeof label === 'string' ? label : label?.name).filter(label => typeof label === 'string' && label);
       const created = date(model.item || {});
-      if (referenceLayout && model.sections) return node('column', { id }, [
-        ...(labels.length ? [text(labels.join(' · '))] : []), node('markdown', { text: displayedBody(model.item?.body) }),
-      ]);
-      if (supportsNativeTimeline) return node('timelineItem', { id, value: 'comment' }, [
-        authorButton(model, model.item || {}, sourceURL),
-        row([...(created ? [text(t(`opened ${created}`, `创建于 ${created}`))] : []), node('spacer')]),
-        column([...(labels.length ? [text(labels.join(' · '))] : []), node('markdown', { text: displayedBody(model.item?.body) })]),
-      ]);
+      if (supportsNativeTimeline) {
+        const associations = { OWNER: t('Owner', '所有者'), MEMBER: t('Member', '成员'), COLLABORATOR: t('Collaborator', '协作者'),
+          CONTRIBUTOR: t('Contributor', '贡献者'), FIRST_TIMER: t('First-time contributor', '首次贡献者'), FIRST_TIME_CONTRIBUTOR: t('First-time contributor', '首次贡献者') };
+        const association = Object.hasOwn(associations, model.item?.author_association) ? associations[model.item.author_association] : null;
+        return node('timelineItem', { id, value: 'comment' }, [
+          authorButton(model, model.item || {}, sourceURL),
+          row([...(created ? [text(t(`opened ${created}`, `创建于 ${created}`))] : []), node('spacer'), ...(association ? [badge(association)] : [])]),
+          column([...(!hasDetailAside(model) && labels.length ? [text(labels.join(' · '))] : []), node('markdown', { text: displayedBody(model.item?.body) })]),
+        ]);
+      }
       return node('column', { id, appearance: 'secondary' }, [
         row([authorButton(model, model.item || {}, sourceURL), ...(created ? [text(t(`opened ${created}`, `创建于 ${created}`))] : []), node('spacer')]),
         ...(labels.length ? [text(labels.join(' · '))] : []),
@@ -986,8 +1014,8 @@
       if (entries.length > 80) footer.push(text(t('Showing part of the loaded history. View the full conversation on GitHub.', '这里只显示部分已加载记录，完整讨论可在 GitHub 查看。')));
       if (!hasDetailAside(model)) footer.push(nativeReadiness(model));
       footer.push(...nativeCommentComposer(model));
-      const fitted = fit(model, hasDetailAside(model) ? [nativeDescription(model), node('divider'), text(t('Activity', '动态'), 'headline', 'neutral')] : [nativeDescription(model)], cards, footer, '', true, 1);
-      const start = hasDetailAside(model) ? 3 : 0;
+      const fitted = fit(model, [nativeDescription(model)], cards, footer, '', true, 1);
+      const start = hasDetailAside(model) ? 1 : 0;
       const end = fitted.findIndex((value, index) => index >= start && (value.type !== 'timelineItem' && !value.id?.startsWith('pr-commit-group-') || value.id === 'pr-comment-composer'));
       const threadEnd = end < 0 ? fitted.length : end;
       return [...fitted.slice(0, start), node('column', { id: 'pr-conversation' }, fitted.slice(start, threadEnd)), ...fitted.slice(threadEnd)];

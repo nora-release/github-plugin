@@ -8,7 +8,9 @@ const user = (login, id) => ({ login, html_url: `https://github.com/${login}`, a
 const pull = issue(1, 'The actual PR title', { repository_url: 'https://api.github.com/repos/team/project', repository: { full_name: 'team/project' },
   html_url: 'https://github.com/team/project/pull/1', pull_request: {}, user: user('writer', 10), head: { sha, ref: 'feature' }, base: { ref: 'main' },
   body: 'Original complete description.', comments: 1, review_comments: 0, changed_files: 2, additions: 25, deletions: 7,
-  mergeable: true, mergeable_state: 'clean', requested_reviewers: [user('reviewer', 11)] });
+  mergeable: true, mergeable_state: 'clean', requested_reviewers: [user('reviewer', 11)], assignees: [user('assignee', 13)],
+  labels: [{ name: 'bug' }], milestone: { title: 'Next release', html_url: 'https://github.com/team/project/milestone/2' },
+  created_at: '2026-10-15T00:00:00Z', author_association: 'MEMBER' });
 function currentHost(options = {}) {
   return fixture({ saved: connection, supportsDetailAside: true, ...options,
     ownerAvatarRoute: async () => ({ status: 200, headers: { 'content-type': 'image/png' }, bodyBase64: image }), route: async url => {
@@ -30,7 +32,7 @@ async function open(f) {
   return f.render({ action: 'item:item-team/project/1' });
 }
 
-test('The shipped SDK accepts the context column and loads requested reviewer avatars from its items tree', async () => {
+test('The shipped SDK accepts the original comment card and loads reviewer and assignee avatars from the context column', async () => {
   const f = currentHost(); await open(f); await new Promise(resolve => setImmediate(resolve));
   const page = await f.render({}), detail = page.children[1];
   assert.equal(detail.type, 'detail');
@@ -38,8 +40,17 @@ test('The shipped SDK accepts the context column and loads requested reviewer av
   assert.equal(detail.items.length, 1); assert.equal(detail.items[0].id, 'pr-context-aside');
   const reviewer = nodes(detail.items[0]).find(node => node.type === 'button' && node.text === 'reviewer');
   assert.equal(reviewer.avatarBase64, image);
+  const assignee = nodes(detail.items[0]).find(node => node.type === 'button' && node.text === 'assignee');
+  assert.equal(assignee.avatarBase64, image);
   assert.ok(f.requests.some(request => new URL(request.url).pathname === '/u/11'));
-  assert.equal(nodes(detail).find(node => node.id === 'pr-description').type, 'column');
+  assert.ok(f.requests.some(request => new URL(request.url).pathname === '/u/13'));
+  const description = nodes(detail).find(node => node.id === 'pr-description');
+  assert.equal(description.type, 'timelineItem');
+  assert.equal(description.children[0].text, 'writer');
+  assert.equal(description.children[0].avatarBase64, image);
+  assert.ok(nodes(description.children[1]).some(node => node.type === 'badge' && node.text === 'Member'));
+  assert.ok(nodes(detail.items[0]).some(node => node.type === 'badge' && node.text === 'bug'));
+  assert.ok(nodes(detail.items[0]).some(node => node.type === 'button' && node.text === 'Next release'));
   assert.equal(nodes(detail).filter(node => node.text === 'Original complete description.').length, 1);
   assert.ok(f.requests.every(request => !request.method || request.method === 'GET'));
 });

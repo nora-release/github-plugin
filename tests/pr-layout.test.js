@@ -223,8 +223,28 @@ test('Native PR tabs keep one current section and expose counts separately from 
     assert.equal(tabs.children.filter(value => value.value === 'selected').length, 1);
     assert.equal(tabs.children.find(value => value.value === 'selected').action, `pr-tab:${tab}`);
     assert.equal(tabs.children.find(value => value.action === 'pr-tab:files').subtitle, '25');
-    assert.deepEqual(Array.from(tabs.children, value => value.symbol), ['text.bubble', 'checkmark.circle', 'arrow.triangle.branch', 'doc.on.doc']);
+    assert.deepEqual(Array.from(tabs.children, value => value.action), ['pr-tab:discussion', 'pr-tab:commits', 'pr-tab:checks', 'pr-tab:files']);
+    assert.deepEqual(Array.from(tabs.children, value => value.symbol), ['text.bubble', 'circle.and.line.horizontal', 'checkmark.circle', 'doc.on.doc']);
   }
+});
+
+test('Native tab counts show known zero values without inventing counts for missing or incomplete data', () => {
+  const current = model(), api = view('en', { supportsNativeLayout: true });
+  current.item.comments = 0; current.item.commits = 0; current.item.changed_files = 0;
+  assert.ok(api.tabs(current).children.every(value => value.subtitle === '0'));
+  for (const [field, action] of [['comments', 'discussion'], ['commits', 'commits'], ['changed_files', 'files']]) {
+    delete current.item[field];
+    assert.equal(api.tabs(current).children.find(value => value.action === `pr-tab:${action}`).subtitle, undefined);
+  }
+  for (const name of ['checks', 'statuses']) {
+    for (const changes of [{ loaded: false }, { loading: true }, { error: 'Permission denied' }, { nextPage: 2 }, { notice: 'Partial source' }]) {
+      current.sections[name] = section([], changes);
+      assert.equal(api.tabs(current).children.find(value => value.action === 'pr-tab:checks').subtitle, undefined);
+    }
+    current.sections[name] = section();
+  }
+  current.sections.checks = section([check(1)], { nextPage: 2 });
+  assert.equal(api.tabs(current).children.find(value => value.action === 'pr-tab:checks').subtitle, '1');
 });
 
 test('Native readiness stays with the discussion rather than dedicated file views', () => {

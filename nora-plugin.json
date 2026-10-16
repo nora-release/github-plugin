@@ -5,7 +5,7 @@
   "id": "com.nora.github",
   "name": "GitHub",
   "iconPath": "assets/github.svg",
-  "version": "0.10.8",
+  "version": "0.10.9",
   "summary": "Connect GitHub to view PR discussions, reviews, CI/CD checks, commits, and changes; comment and merge from native Nora views.",
   "publisher": "Nora",
   "apiVersion": 1,

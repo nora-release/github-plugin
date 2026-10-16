@@ -33,7 +33,8 @@ test('The context column follows the reference sections and only exposes existin
   assert.equal(aside.length, 1);
   assert.equal(aside[0].type, 'column');
   assert.equal(aside[0].id, 'pr-context-aside');
-  assert.deepEqual(Array.from(aside[0].children.filter(node => node.type === 'column'), node => node.id), ['pr-aside-changes', 'pr-aside-reviewers', 'pr-aside-comments', 'pr-aside-checks', 'pr-aside-merge']);
+  assert.deepEqual(Array.from(aside[0].children.filter(node => node.type === 'column'), node => node.id),
+    ['pr-aside-reviewers', 'pr-aside-assignees', 'pr-aside-labels', 'pr-aside-milestone', 'pr-aside-changes', 'pr-aside-comments', 'pr-aside-checks', 'pr-aside-merge']);
   const nodes = flatten(aside);
   assert.ok(nodes.some(node => node.text === '60 files' && node.action === 'pr-tab:files'));
   assert.ok(nodes.some(node => node.text === '+2348' && node.tone === 'success'));
@@ -73,6 +74,45 @@ test('Reviewers preserve participant avatar tracking and distinguish requested, 
   assert.equal(rows.find(row => row.children[0].text === 'approved').children.at(-1).text, 'Approved', 'A later comment does not erase an approval');
   assert.equal(rows.find(row => row.children[0].text === 'changes').children.at(-1).text, 'Changes requested');
   assert.equal(rows.find(row => row.children[0].text === 'requested').children.at(-1).text, 'Requested', 'An outstanding new review request takes precedence over an old approval');
+});
+
+test('Assignees labels and milestone use real bounded metadata and only expose read-only links', () => {
+  const current = model(), tracked = new WeakMap(), api = view({ onAuthorButton: (node, user) => tracked.set(node, user) });
+  current.item.assignees = [account('same'), account('SAME'), ...Array.from({ length: 9 }, (_, index) => account(`assigned${index}`))];
+  current.item.labels = ['bug', { name: 'bug' }, ...Array.from({ length: 10 }, (_, index) => ({ name: `label${index}-` + 'long'.repeat(50) }))];
+  current.item.milestone = { title: 'Ship native cards', html_url: 'https://github.com/owner/repo/milestone/3' };
+  const aside = api.nativeAside(current)[0];
+  const assignees = aside.children.find(node => node.id === 'pr-aside-assignees');
+  const people = assignees.children.filter(node => node.type === 'button' && node.avatarBase64);
+  assert.equal(people.length, 6);
+  assert.equal(people.filter(node => node.text.toLowerCase() === 'same').length, 1);
+  for (const person of people) assert.equal(person.avatarBase64, `avatar:${tracked.get(person).login}`);
+  assert.ok(assignees.children.some(node => node.text === 'View all assignees' && node.action.startsWith('pr-open:')));
+  const labels = aside.children.find(node => node.id === 'pr-aside-labels');
+  assert.equal(labels.children.filter(node => node.type === 'badge').length, 8);
+  assert.ok(labels.children.filter(node => node.type === 'badge').every(node => node.text.length <= 128));
+  assert.equal(labels.children.filter(node => node.text === 'bug').length, 1);
+  assert.ok(labels.children.some(node => node.text === 'View all labels'));
+  const milestone = aside.children.find(node => node.id === 'pr-aside-milestone').children.find(node => node.type === 'button');
+  assert.equal(milestone.text, 'Ship native cards');
+  assert.equal(decodeURIComponent(milestone.action.slice('pr-open:'.length)), current.item.milestone.html_url);
+  current.item.milestone.html_url = 'https://evil.test/stolen';
+  assert.ok(!flatten(api.nativeAside(current)).some(node => node.action?.includes('evil.test')));
+  assert.ok(flatten([aside]).filter(node => node.type === 'button').every(node => node.action.startsWith('pr-open:') || node.action.startsWith('pr-tab:')));
+});
+
+test('Metadata distinguishes known empty values from missing or malformed GitHub fields', () => {
+  for (const [metadata, expected] of [
+    [{ assignees: [], labels: [], milestone: null }, ['No assignees', 'No labels', 'No milestone']],
+    [{}, ['Assignees not available', 'Labels not available', 'Milestone not available']],
+    [{ assignees: [{}], assignee: null, labels: [{}], milestone: {} }, ['Assignees not available', 'Labels not available', 'Milestone not available']],
+  ]) {
+    const current = model(); Object.assign(current.item, metadata);
+    const aside = text(view().nativeAside(current));
+    for (const value of expected) assert.ok(aside.includes(value), value);
+  }
+  const current = model(); current.item.assignee = account('legacy-assignee');
+  assert.ok(flatten(view().nativeAside(current)).some(node => node.text === 'legacy-assignee' && node.avatarBase64 === 'avatar:legacy-assignee'));
 });
 
 test('Unavailable and paginated review data remain visibly incomplete with bounded reviewer rows', () => {
@@ -126,20 +166,48 @@ test('Missing sources and zero results are distinct states and never imply all c
   assert.match(empty, /No checks reported/); assert.match(empty, /No reviewers/);
 });
 
-test('Main content uses an unframed original description before activity and the comment composer', () => {
+test('The original description is a comment card with its real author date and association before activity', () => {
   const api = view(), current = model();
+  current.item.author_association = 'MEMBER'; current.item.labels = [{ name: 'bug' }];
   const body = api.nativeContent(current), description = body.find(node => node.id === 'pr-description');
-  assert.equal(description.type, 'column'); assert.equal(description.appearance, undefined);
-  assert.deepEqual(Array.from(description.children, node => node.type), ['markdown']);
-  assert.equal(description.children[0].text, current.item.body);
-  assert.ok(body.some(node => node.text === 'Activity'));
+  assert.equal(description.type, 'timelineItem'); assert.equal(description.value, 'comment');
+  assert.deepEqual(Array.from(description.children, node => node.type), ['button', 'row', 'column']);
+  assert.equal(description.children[0].text, 'author');
+  assert.equal(description.children[0].avatarBase64, 'avatar:author');
+  assert.match(text([description.children[1]]), /opened 2026-10-15/);
+  assert.ok(flatten([description.children[1]]).some(node => node.type === 'badge' && node.text === 'Member'));
+  assert.deepEqual(Array.from(description.children[2].children, node => node.type), ['markdown']);
+  assert.equal(description.children[2].children[0].text, current.item.body);
+  assert.ok(flatten(api.nativeAside(current)).some(node => node.type === 'badge' && node.text === 'bug'));
+  assert.equal(body[0].id, 'pr-description');
+  assert.equal(body[1].id, 'pr-conversation');
+  assert.ok(!body.some(node => node.type === 'divider' || node.text === 'Activity'));
   assert.ok(!flatten(body).some(node => node.id === 'pr-readiness'), 'Status information moves to the context column once');
   assert.equal(body.at(-1).id, 'pr-comment-composer');
   assert.ok(flatten(body).some(node => node.type === 'textEditor' && node.value === 'An unfinished reply.'));
 });
 
+test('Issues use the same original comment card and absent or unknown associations are never invented', () => {
+  const api = view(), current = model();
+  const issue = { item: current.item, repo: current.repo, number: current.number };
+  const description = api.nativeDescription(issue, 'https://github.com/owner/repo/issues/1', 'issue-description');
+  assert.equal(description.type, 'timelineItem'); assert.equal(description.value, 'comment');
+  assert.equal(description.id, 'issue-description');
+  assert.equal(description.children[0].text, 'author');
+  assert.equal(description.children[2].children[0].text, current.item.body);
+  for (const value of [undefined, '', 'NONE', 'UNKNOWN', 'constructor', '__proto__']) {
+    current.item.author_association = value;
+    const description = api.nativeDescription(current);
+    assert.ok(!flatten([description.children[1]]).some(node => node.type === 'badge'));
+    assert.ok(flatten([description.children[2]]).some(node => node.type === 'markdown' && node.text === current.item.body));
+  }
+});
+
 test('A partial history remains reachable and the combined discussion and context column stay in the content budget', () => {
   const current = model(), api = view();
+  current.item.assignees = Array.from({ length: 12 }, (_, index) => account(`assignee${index}`));
+  current.item.labels = Array.from({ length: 16 }, (_, index) => ({ name: `label${index}-` + 'long name '.repeat(30) }));
+  current.item.milestone = { title: 'A real milestone', html_url: 'https://github.com/owner/repo/milestone/1' };
   current.sections.comments = section(Array.from({ length: 80 }, (_, index) => ({ id: index, user: account(`author${index}`), body: `Original comment ${index}`, created_at: `2026-10-15T00:${String(index).padStart(2, '0')}:00Z` })), { nextPage: 2 });
   const combined = [...api.nativeContent(current), ...api.nativeAside(current)];
   const nodes = flatten(combined);
