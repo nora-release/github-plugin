@@ -603,3 +603,42 @@ test('A late automatic workflow load cannot replace the selected workflow of a d
   assert.match(texts(split.children[1]), /Step 84/);
   assert.ok(nodes(split.children[0]).some(value => value.action === 'pr-jobs:84' && value.value === 'selected'));
 });
+
+
+test('A native successful merge removes the active sidebar row while preserving merge feedback and the comment draft', async () => {
+  let merged = false;
+  const baseRoute = fixtureRoute({
+    detail: () => pull(1, merged ? { state: 'closed', merged: true } : {}),
+    mutation: async (url, args) => {
+      assert.equal(url.pathname, '/repos/alice/project/pulls/1/merge');
+      assert.equal(args.method, 'PUT');
+      assert.deepEqual(JSON.parse(args.body), { sha: head, merge_method: 'merge' });
+      merged = true;
+      return body({ merged: true, sha: newerHead }, 200);
+    },
+  });
+  const f = fixture({ saved: connection, route: async (url, args) => {
+    if (url.pathname === '/search/issues') return url.searchParams.get('page') === '2'
+      ? searchBody([pull(1, { title: 'Stale pre-merge search copy' }), pull(2, { title: 'Next pending PR' })])
+      : searchBody([pull()], 200, { Link: '<https://api.github.com/search/issues?page=2>; rel="next"' });
+    return baseRoute(url, args);
+  } });
+  const initial = await openFixturePR(f);
+  const editor = nodes(initial).find(node => node.type === 'textEditor');
+  const draft = 'Keep this unsent comment after merging.';
+  await f.render({ action: 'pr-merge:merge', values: { [editor.id]: draft } });
+  const completed = await f.render({ action: 'pr-confirm-merge' });
+  assert.equal(completed.value, 'item-alice/project/1');
+  assert.equal(completed.children[0].value, '');
+  assert.ok(!nodes(completed.children[0]).some(node => node.action === 'item:item-alice/project/1'));
+  assert.match(texts(completed.children[1]), /PR merged\./);
+  assert.equal(nodes(completed).find(node => node.type === 'textEditor').value, draft);
+  assert.equal(f.requests.filter(request => request.method === 'PUT').length, 1);
+  assert.ok(!f.requests.some(request => request.method === 'POST'));
+  const rerendered = await f.render({ action: 'more-items' });
+  assert.match(texts(rerendered.children[1]), /PR merged\./);
+  assert.match(texts(rerendered.children[0]), /Next pending PR/);
+  assert.doesNotMatch(texts(rerendered), /Stale pre-merge search copy/);
+  assert.equal(nodes(rerendered).find(node => node.type === 'textEditor').value, draft);
+  assert.ok(!nodes(rerendered.children[0]).some(node => node.action === 'item:item-alice/project/1'));
+});

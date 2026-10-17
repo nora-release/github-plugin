@@ -34,14 +34,19 @@ for (const [kind, extra, label, tone, symbol] of [
   ['draft', { draft: true }, 'Draft', 'muted', 'circle.dashed'],
   ['closed', { state: 'closed' }, 'Closed', 'danger', 'xmark.circle'],
 ]) {
-  test(`A ${kind} PR uses the exact provided SVG in its sidebar and detail badge`, async () => {
+  test(`A ${kind} PR keeps its exact detail SVG and only open PRs remain in the sidebar`, async () => {
     const item = pull(7, extra);
-    const f = fixture({ saved: connection, route: async url => basics(url) || (url.pathname === '/search/issues' ? searchBody([item]) : body(item)) });
+    const f = fixture({ saved: connection, route: async url => basics(url) || (url.pathname === '/search/issues' ? searchBody([pull(7, kind === 'closed' ? {} : extra)]) : body(item)) });
     await f.renderReady({});
     const overview = await f.render({ action: 'kind:pulls' });
     const selected = await f.render({ action: 'item:item-alice/project/7' });
     assertHeading(selected, item, 'PR', label);
-    for (const badge of [overview.children[0].items[0].children[0], selected.children[0].items[0].children[0], detailBadge(selected)]) {
+    const badges = kind === 'closed' ? [detailBadge(selected)] : [overview.children[0].items[0].children[0], selected.children[0].items[0].children[0], detailBadge(selected)];
+    if (kind === 'closed') {
+      assert.equal(overview.children[0].items[0].children[0].iconSVG, expectedIcons.open);
+      assert.equal(selected.children[0].items.length, 0);
+    }
+    for (const badge of badges) {
       assert.equal(badge.type, 'badge');
       assert.equal(badge.iconSVG, expectedIcons[kind]);
       assert.equal(badge.text, label);
@@ -52,15 +57,17 @@ for (const [kind, extra, label, tone, symbol] of [
   });
 }
 
-test('Merged PRs use the exact provided SVG in the sidebar and heading ahead of closed or draft states', async () => {
+test('PRs discovered merged leave the sidebar and retain the exact merged SVG ahead of closed or draft details', async () => {
   for (const extra of [{ merged: true }, { merged_at: '2026-10-14' }, { pull_request: { merged_at: '2026-10-14' } }]) {
     const item = pull(7, { state: 'closed', draft: true, ...extra });
-    const f = fixture({ saved: connection, route: async url => basics(url) || (url.pathname === '/search/issues' ? searchBody([item]) : body(item)) });
+    const f = fixture({ saved: connection, route: async url => basics(url) || (url.pathname === '/search/issues' ? searchBody([pull(7, { draft: true })]) : body(item)) });
     await f.renderReady({});
     const overview = await f.render({ action: 'kind:pulls' });
     const selected = await f.render({ action: 'item:item-alice/project/7' });
     assertHeading(selected, item, 'PR', 'Merged');
-    for (const badge of [overview.children[0].items[0].children[0], selected.children[0].items[0].children[0], detailBadge(selected)]) {
+    assert.equal(overview.children[0].items[0].children[0].text, 'Draft');
+    assert.equal(selected.children[0].items.length, 0);
+    for (const badge of [detailBadge(selected)]) {
       assert.equal(badge.text, 'Merged');
       assert.equal(badge.tone, 'accent');
       assert.equal(badge.symbol, 'arrow.triangle.merge');
@@ -81,7 +88,7 @@ test('Merged status remains in the heading and legacy readiness views without a 
     const f = fixture({ saved: connection, supportsDetailAside, supportsItemRowIcon, supportsPurpleTone,
       unavailableViewKinds: supportsTimeline ? [] : ['timelineItem'], route: async url => {
         const basic = basics(url); if (basic) return basic;
-        if (url.pathname === '/search/issues') return searchBody([item]);
+        if (url.pathname === '/search/issues') return searchBody([pull(7)]);
         if (url.pathname === '/repos/alice/project/pulls/7') return body(item);
         if (url.pathname === '/repos/alice/project') return body({ permissions: { push: false } });
         if (url.pathname.endsWith('/check-runs')) return body({ check_runs: [] });
@@ -91,7 +98,8 @@ test('Merged status remains in the heading and legacy readiness views without a 
       } });
     await f.renderReady({}); await f.render({ action: 'kind:pulls' });
     const selected = await f.render({ action: 'item:item-alice/project/7' });
-    for (const badge of [selected.children[0].items[0].children[0], detailBadge(selected)]) {
+    assert.equal(selected.children[0].items.length, 0);
+    for (const badge of [detailBadge(selected)]) {
       assert.equal(badge.text, 'Merged');
       assert.equal(badge.tone, supportsPurpleTone ? 'purple' : 'accent');
       assert.equal(badge.iconSVG, expectedIcons.merged);
@@ -119,11 +127,13 @@ test('Merged status remains in the heading and legacy readiness views without a 
 test('Issue badges retain their semantic circles without any PR SVG', async () => {
   for (const [state, symbol, tone] of [['open', 'circle.circle', 'success'], ['closed', 'checkmark.circle', 'accent']]) {
     const item = issue(7, 'Issue 7', { state });
-    const f = fixture({ saved: connection, route: async url => basics(url) || (url.pathname === '/search/issues' ? searchBody([item]) : body(item)) });
+    const f = fixture({ saved: connection, route: async url => basics(url) || (url.pathname === '/search/issues' ? searchBody([issue(7, 'Issue 7')]) : body(item)) });
     const overview = await f.renderReady({});
     const selected = await f.render({ action: 'item:item-alice/project/7' });
     assertHeading(selected, item, 'Issue', state === 'open' ? 'Open' : 'Closed');
-    for (const badge of [overview.children[0].items[0].children[0], detailBadge(selected)]) {
+    const badges = state === 'open' ? [overview.children[0].items[0].children[0], detailBadge(selected)] : [detailBadge(selected)];
+    if (state === 'closed') assert.equal(selected.children[0].items.length, 0);
+    for (const badge of badges) {
       assert.equal(badge.iconSVG, undefined);
       assert.equal(badge.symbol, symbol);
       assert.equal(badge.tone, tone);
@@ -186,7 +196,7 @@ test('Hosts without native detail support retain the previous standalone title a
 test('Paginated PR SVG badges stay inside Swift encoded view and node limits', async () => {
   const f = fixture({ saved: connection, route: async url => basics(url) || searchBody(Array.from({ length: 50 }, (_, index) => {
     const number = (Number(url.searchParams.get('page')) - 1) * 50 + index + 1;
-    return pull(number, number % 3 === 0 ? { draft: true } : number % 3 === 1 ? {} : { state: 'closed' });
+    return pull(number, number % 3 === 0 ? { draft: true } : {});
   }), 200, { link: '<https://api.github.com/search/issues?page=2>; rel="next"' }) });
   await f.renderReady({});
   let view = await f.render({ action: 'kind:pulls' });

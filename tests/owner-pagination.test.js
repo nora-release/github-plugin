@@ -229,7 +229,7 @@ test('Growing lists retain their earliest row and stop at a stable display limit
   assert.equal(f.requests.filter(request => request.responseEncoding === 'base64').length, 1);
 });
 
-test('Chinese item state badges use concise open closed merged and draft labels with distinct tones', async () => {
+test('Chinese active sidebar keeps concise open and draft labels and excludes closed and merged PRs', async () => {
   const f = fixture({ saved: connection, locale: 'zh-Hans', route: async url => basics(url) || searchBody([
     feedItem('team/project', 1, { pull_request: {} }), feedItem('team/project', 2, { pull_request: {}, state: 'closed' }),
     feedItem('team/project', 3, { pull_request: { merged_at: '2026-10-14' }, state: 'closed' }), feedItem('team/project', 4, { pull_request: {}, draft: true }),
@@ -237,7 +237,7 @@ test('Chinese item state badges use concise open closed merged and draft labels 
   await f.renderReady({});
   const view = await f.render({ action: 'kind:pulls' });
   assert.deepEqual(Array.from(view.children[0].items, entry => [entry.children[0].text, entry.children[0].tone]),
-    [['打开', 'success'], ['已关闭', 'danger'], ['已合并', 'accent'], ['草稿', 'muted']]);
+    [['打开', 'success'], ['草稿', 'muted']]);
 });
 
 test('Full PR details update the corresponding sidebar status while preserving identity and order', async () => {

@@ -1210,7 +1210,7 @@
     network: t('GitHub could not be reached. Try again.', '无法连接 GitHub，请重试。'),
     invalid: t('GitHub returned an invalid response. Try again.', 'GitHub 返回了无效结果，请重试。'),
   };
-  const state = { user: null, avatarBase64: null, avatarAccount: '', avatarURL: '', repos: [], repo: '', repoQuery: '', items: [], kind: 'issues', status: 'open', query: '', author: '', label: '', page: 1, repoPage: 1, moreItems: false, moreRepos: false, selected: null, detailsVisible: false, detailLoading: false, detailError: '', device: null, error: '', itemLoadError: '', itemRetryAppend: false, restored: false, showToken: false, showOtherRepository: false, manualRepository: '', itemsLoading: false, reposLoading: false };
+  const state = { user: null, avatarBase64: null, avatarAccount: '', avatarURL: '', repos: [], repo: '', repoQuery: '', items: [], kind: 'issues', query: '', author: '', label: '', page: 1, repoPage: 1, moreItems: false, moreRepos: false, selected: null, detailsVisible: false, detailLoading: false, detailError: '', device: null, error: '', itemLoadError: '', itemRetryAppend: false, restored: false, showToken: false, showOtherRepository: false, manualRepository: '', itemsLoading: false, reposLoading: false };
   const avatars = new Map();
   let participantButtons = new WeakMap();
   let visibleParticipants = new Map();
@@ -1402,11 +1402,11 @@
     if (!Array.isArray(result.data)) throw new Error(message.invalid);
     return { items: kind === 'issues' ? result.data.filter(item => !item.pull_request) : result.data, nextPage: hasNext(result.headers) ? p + 1 : null };
   }
-  async function panelItems(repo, kind, filter, p) {
+  async function panelItems(repo, kind, p) {
     const login = state.user?.login;
     if (typeof login !== 'string' || !/^[A-Za-z0-9][A-Za-z0-9_-]{0,99}$/.test(login)) throw new Error(message.invalid);
-    const query = [kind === 'pulls' ? 'is:pull-request' : 'is:issue',
-      ...(filter === 'all' ? [] : [`state:${status(filter)}`]), ...(repo ? [`repo:${repository(repo)}`] : []),
+    const query = [kind === 'pulls' ? 'is:pull-request' : 'is:issue', 'state:open',
+      ...(repo ? [`repo:${repository(repo)}`] : []),
       kind === 'pulls' ? `(involves:${login} OR review-involves:${login})` : `involves:${login}`].join(' ');
     // OR between qualifiers requires GitHub's advanced search mode.
     const result = await api(`/search/issues?q=${encodeURIComponent(query)}&sort=updated&order=desc&per_page=50&page=${page(p)}&advanced_search=true`);
@@ -1415,7 +1415,7 @@
         typeof data.incomplete_results !== 'boolean') throw new Error(message.invalid);
     if (data.incomplete_results) throw new Error(t('GitHub could not finish this search. Try again.', 'GitHub 未能完成此次查询，请重试。'));
     const items = data.items.map(item => normalizeItem(item, repo));
-    return { items: items.filter(item => Boolean(item.pull_request) === (kind === 'pulls')),
+    return { items: items.filter(item => isOpenItem(item) && Boolean(item.pull_request) === (kind === 'pulls')),
       nextPage: hasNext(result.headers) && p < 20 ? p + 1 : null };
   }
   function clearDetails() {
@@ -1425,10 +1425,10 @@
   }
   async function loadDetail(item, { preserveTab = false } = {}) {
     const revision = ++detailRevision, current = generation;
-    const requestedKey = itemKey(item), requestedKind = state.kind, requestedRepo = state.repo, requestedStatus = state.status;
+    const requestedKey = itemKey(item), requestedKind = state.kind, requestedRepo = state.repo;
     state.selected = item; state.detailsVisible = true; state.detailLoading = true; state.detailError = '';
     const isCurrent = () => current === generation && revision === detailRevision && state.kind === requestedKind &&
-      state.repo === requestedRepo && state.status === requestedStatus && state.selected && itemKey(state.selected) === requestedKey && state.detailsVisible;
+      state.repo === requestedRepo && state.selected && itemKey(state.selected) === requestedKey && state.detailsVisible;
     try {
       const result = await api(`/repos/${itemRepository(item)}/${requestedKind}/${item.number}`);
       if (!isCurrent()) return;
@@ -1457,15 +1457,17 @@
   async function loadItems(append = false, retry = false) {
     if (append && (state.itemsLoading || !state.moreItems || !retry && (state.itemLoadError || state.query.trim() || state.author || state.label || filteredItems().length >= maximumSidebarItems))) return;
     const revision = ++itemRevision, current = generation;
-    const requestedRepo = state.repo, requestedKind = state.kind, requestedStatus = state.status;
+    const requestedRepo = state.repo, requestedKind = state.kind;
     const requestedPage = append ? state.page + 1 : 1;
     if (!append) { state.items = []; clearDetails(); state.moreItems = false; }
     state.itemsLoading = true; state.itemLoadError = ''; state.itemRetryAppend = false;
     try {
-      const result = await panelItems(requestedRepo, requestedKind, requestedStatus, requestedPage);
+      const result = await panelItems(requestedRepo, requestedKind, requestedPage);
       if (current !== generation || revision !== itemRevision) return;
       state.page = requestedPage;
-      state.items = uniqueItems(append ? [...state.items, ...result.items] : result.items);
+      const completedKeys = new Set(append ? state.items.filter(item => !isOpenItem(item)).map(itemKey) : []);
+      const incoming = result.items.filter(item => !completedKeys.has(itemKey(item)));
+      state.items = uniqueItems(append ? [...state.items, ...incoming] : incoming);
       state.moreItems = !!result.nextPage;
       if (state.selected && !state.items.some(item => itemKey(item) === itemKey(state.selected))) clearDetails();
     } catch (error) {
@@ -1673,7 +1675,7 @@
     avatars.clear(); visibleParticipants.clear(); visibleParticipantPage = ''; participantButtons = new WeakMap(); participantCommitsOperation = null;
     state.itemLoadError = ''; state.itemRetryAppend = false;
     state.moreItems = false; state.moreRepos = false;
-    state.page = 1; state.repoPage = 1; state.query = ''; state.repoQuery = ''; state.author = ''; state.label = ''; state.kind = 'issues'; state.status = 'open';
+    state.page = 1; state.repoPage = 1; state.query = ''; state.repoQuery = ''; state.author = ''; state.label = ''; state.kind = 'issues';
     clearDetails(); state.showToken = false; state.showOtherRepository = false;
     state.manualRepository = ''; state.itemsLoading = false; state.reposLoading = false;
     ++itemRevision; ++repoRevision;
@@ -1771,9 +1773,12 @@
     if (!Number.isFinite(date.getTime())) return '';
     return date.toLocaleDateString(isChinese ? 'zh-CN' : 'en-US', { month: 'short', day: 'numeric', ...(date.getFullYear() === new Date(Date.now()).getFullYear() ? {} : { year: 'numeric' }) });
   }
+  function isOpenItem(item) {
+    return item.state === 'open' && !item.merged && !item.merged_at && !item.pull_request?.merged_at;
+  }
   function filteredItems() {
     const query = state.query.trim().toLowerCase();
-    return state.items.filter(item => (!query || `${itemRepository(item)} ${item.number} ${item.title} ${item.user?.login || ''}`.toLowerCase().includes(query))
+    return state.items.filter(item => isOpenItem(item) && (!query || `${itemRepository(item)} ${item.number} ${item.title} ${item.user?.login || ''}`.toLowerCase().includes(query))
       && (!state.author || item.user?.login === state.author) && (!state.label || itemLabels(item).includes(state.label)));
   }
   function clearHiddenSelection() {
@@ -1885,7 +1890,7 @@
   }
   function feedToken() {
     let hash = 2166136261;
-    for (const character of JSON.stringify([state.repo, state.kind, state.status, state.query, state.author, state.label])) {
+    for (const character of JSON.stringify([state.repo, state.kind, state.query, state.author, state.label])) {
       hash = Math.imul(hash ^ character.codePointAt(0), 16777619);
     }
     return `${generation}:${itemRevision}:${state.page}:${hash >>> 0}`;
@@ -1913,7 +1918,7 @@
       state.moreItems ? t('No matching items on the loaded pages. Scroll down to continue.', '已加载页面暂无匹配条目，下拉可继续加载。')
         : state.query || state.author || state.label ? t('No matching loaded items.', '已加载条目中没有匹配结果。')
           : state.kind === 'pulls' ? t('No pull requests in this view.', '当前范围暂无 PR。') : t('No Issues in this view.', '当前范围暂无 Issues。')));
-    return node('sidebar', { id: 'item-navigation', value: state.selected && state.detailsVisible ? itemKey(state.selected) : '',
+    return node('sidebar', { id: 'item-navigation', value: state.selected && state.detailsVisible && isOpenItem(state.selected) ? itemKey(state.selected) : '',
       ...(state.moreItems && !state.itemsLoading && !state.itemLoadError && !reachedLimit && !hasLocalFilters
         ? { loadMoreAction: 'more-items', loadMoreToken: feedToken() } : {}),
       items: visibleItems.map((item, index) => {
@@ -1927,15 +1932,12 @@
   function filterMenu() {
     const choices = (selected, values) => [...new Set([selected, ...values.filter(value => typeof value === 'string' && value).sort()]
       .filter(Boolean))].slice(0, 32);
-    const authors = choices(state.author, state.items.map(item => item.user?.login).map(value => short(value, 64)));
-    const labels = choices(state.label, state.items.flatMap(itemLabels));
+    const openItems = state.items.filter(isOpenItem);
+    const authors = choices(state.author, openItems.map(item => item.user?.login).map(value => short(value, 64)));
+    const labels = choices(state.label, openItems.flatMap(itemLabels));
     const filterCount = Number(!!state.author) + Number(!!state.label);
-    const stateLabel = state.status === 'all' ? t('All states', '全部状态') : state.status === 'closed' ? t('Closed', '已关闭') : t('Open', '未关闭');
-    const label = filterCount ? t(`${stateLabel} · ${filterCount} ${filterCount === 1 ? 'filter' : 'filters'}`, `${stateLabel} · ${filterCount} 项筛选`) : stateLabel;
+    const label = filterCount ? t(`Filters · ${filterCount}`, `筛选 · ${filterCount}`) : t('Filters', '筛选');
     return menu(label, [
-      node('picker', { id: 'status', text: t('State on GitHub', 'GitHub 状态'), action: 'status', value: state.status,
-        options: [{ value: 'open', text: t('Open', '未关闭') }, { value: 'closed', text: t('Closed', '已关闭') }, { value: 'all', text: t('All', '全部') }] }),
-      node('divider'),
       node('picker', { id: 'author', text: t('Author in loaded items', '已加载条目的作者'), action: 'author', value: state.author,
         options: [{ value: '', text: t('All authors', '全部作者') }, ...authors.map(value => ({ value, text: value }))] }),
       node('picker', { id: 'label', text: t('Label in loaded items', '已加载条目的标签'), action: 'label', value: state.label,
@@ -1997,10 +1999,10 @@
       subtitle: t('Scroll down in the sidebar to load more items.', '在侧边栏下拉可继续加载条目。'), symbol: 'tray' });
     const filtered = state.query || state.author || state.label;
     return node('emptyState', { text: filtered ? t('No matching loaded items', '已加载条目中没有匹配结果')
-      : state.kind === 'pulls' ? t('No pull requests in this view', '此视图暂无 PR') : t('No Issues in this view', '此视图暂无 Issues'),
+      : state.kind === 'pulls' ? t('No open pull requests', '暂无待处理 PR') : t('No open Issues', '暂无待处理 Issues'),
       subtitle: filtered ? t('Adjust your filters or search. Search only covers items already loaded.', '调整筛选或搜索条件；搜索仅覆盖已经加载的条目。')
-        : t('Try another state or switch between Issues and pull requests.', '尝试其他状态，或切换 Issues 与 PR。'), symbol: state.kind === 'pulls' ? 'arrow.triangle.pull' : 'tray' },
-      [button(filtered ? t('Clear filters', '清除筛选') : t('Show all states', '查看全部状态'), filtered ? 'clear-filters' : 'all-states', false, { appearance: 'secondary' })]);
+        : t('No pending work in this view. Choose another repository or refresh.', '当前范围没有待处理条目，可切换仓库或刷新。'), symbol: state.kind === 'pulls' ? 'arrow.triangle.pull' : 'tray' },
+      [button(filtered ? t('Clear filters', '清除筛选') : message.refresh, filtered ? 'clear-filters' : 'refresh', false, { appearance: 'secondary' })]);
   }
   function collectParticipants(main) {
     const images = [];
@@ -2071,7 +2073,8 @@
     while (visibleItems.length > 1 && (encodedViewSize({ type: 'workspace', ...properties, children: [sidebar, main] }) > 400 * 1024
       || viewNodeCount({ children: [sidebar, main] }) > 950)) {
       visibleItems = visibleItems.slice(0, Math.max(1, visibleItems.length - 20));
-      if (state.selected && state.detailsVisible && !visibleItems.some(item => itemKey(item) === itemKey(state.selected))) {
+      if (state.selected && state.detailsVisible && items.some(item => itemKey(item) === itemKey(state.selected)) &&
+          !visibleItems.some(item => itemKey(item) === itemKey(state.selected))) {
         visibleItems = [...visibleItems.slice(0, -1), state.selected];
       }
       sidebar = itemSidebar(visibleItems, items.length, 0);
@@ -2164,8 +2167,7 @@
         state.showOtherRepository = false; state.query = ''; state.author = ''; state.label = '';
         await loadItems();
       }
-      else if (action === 'status') { state.status = status(event.value ?? values.status); await loadItems(); }
-      else if (action === 'all-states') { state.status = 'all'; await loadItems(); }
+      else if (action === 'status' || action === 'all-states') await loadItems();
       else if (action === 'query') { state.query = short(event.value ?? values.query ?? '', 1024); clearHiddenSelection(); }
       else if (action === 'author' || action === 'label') { state[action] = short(event.value ?? values[action] ?? '', 128); clearHiddenSelection(); }
       else if (action === 'clear-filters') { state.query = ''; state.author = ''; state.label = ''; }

@@ -99,7 +99,7 @@ test('Personal queries exclude unrelated public repository activity and include 
   assert.ok(apiRequests(f).every(request => !new URL(request.url).searchParams.has('filter')));
 });
 
-test('Personal scope survives pagination, repository selection, status changes, and Issue/PR switches', async () => {
+test('Open personal scope survives pagination, repository selection, legacy status events, and Issue/PR switches', async () => {
   const queries = [];
   const f = feedFixture(async url => {
     assert.equal(url.pathname, '/search/issues');
@@ -118,18 +118,20 @@ test('Personal scope survives pagination, repository selection, status changes, 
   await f.render({ action: 'kind:pulls' });
   await f.render({ action: 'more-items' });
   await f.render({ action: 'status', value: 'all' });
+  await f.render({ action: 'all-states' });
   await f.render({ action: 'repository', value: '' });
   await f.render({ action: 'kind:issues' });
   assert.deepEqual(queries, [
     { query: 'is:issue state:open involves:alice', page: '1' },
     { query: 'is:issue state:open involves:alice', page: '2' },
     { query: 'is:issue state:open repo:team/second involves:alice', page: '1' },
-    { query: 'is:issue state:closed repo:team/second involves:alice', page: '1' },
-    { query: 'is:pull-request state:closed repo:team/second (involves:alice OR review-involves:alice)', page: '1' },
-    { query: 'is:pull-request state:closed repo:team/second (involves:alice OR review-involves:alice)', page: '2' },
-    { query: 'is:pull-request repo:team/second (involves:alice OR review-involves:alice)', page: '1' },
-    { query: 'is:pull-request (involves:alice OR review-involves:alice)', page: '1' },
-    { query: 'is:issue involves:alice', page: '1' },
+    { query: 'is:issue state:open repo:team/second involves:alice', page: '1' },
+    { query: 'is:pull-request state:open repo:team/second (involves:alice OR review-involves:alice)', page: '1' },
+    { query: 'is:pull-request state:open repo:team/second (involves:alice OR review-involves:alice)', page: '2' },
+    { query: 'is:pull-request state:open repo:team/second (involves:alice OR review-involves:alice)', page: '1' },
+    { query: 'is:pull-request state:open repo:team/second (involves:alice OR review-involves:alice)', page: '1' },
+    { query: 'is:pull-request state:open (involves:alice OR review-involves:alice)', page: '1' },
+    { query: 'is:issue state:open involves:alice', page: '1' },
   ]);
 });
 
@@ -475,4 +477,83 @@ test('Closing a detail during its request clears selection and a late response c
   assert.doesNotMatch(texts(view), /Late closed detail/);
   await f.render({ action: 'handoff-item' });
   assert.equal(f.drafts.length, 0);
+});
+
+
+test('The active feed excludes stale closed merged and missing-state search results while retaining draft PRs', async () => {
+  for (const kind of ['issues', 'pulls']) {
+    const extra = kind === 'pulls' ? { pull_request: {} } : {};
+    const variants = [
+      ['Closed stale result', { state: 'closed' }],
+      ['Merged true stale result', { merged: true }],
+      ['Merged timestamp stale result', { merged_at: '2026-10-17T00:00:00Z' }],
+      ['Missing state', { state: undefined }],
+      ['Null state', { state: null }],
+      ['Unknown state', { state: 'merged' }],
+      ...(kind === 'pulls' ? [['Nested merged timestamp stale result', { pull_request: { merged_at: '2026-10-17T00:00:00Z' } }]] : []),
+    ];
+    const f = feedFixture(async () => searchBody([
+      feedItem('alice/project', 1, 'Still pending', extra),
+      feedItem('alice/project', 2, 'Draft remains actionable', { ...extra, draft: true }),
+      ...variants.map(([title, changes], index) => feedItem('alice/project', index + 3, title, { ...extra, ...changes })),
+    ]));
+    let view = await f.renderReady({});
+    if (kind === 'pulls') view = await f.render({ action: 'kind:pulls' });
+    assert.deepEqual(itemActions(view), [`item:${key('alice/project', 1)}`, `item:${key('alice/project', 2)}`]);
+    assert.match(texts(view.children[0]), /Still pending|Draft remains actionable/);
+    for (const [title] of variants) assert.ok(!texts(view).includes(title));
+    assert.ok(!nodes(view).some(node => node.action === 'status' || node.action === 'all-states'));
+    const before = f.requests.length;
+    const stale = await f.render({ action: `item:${key('alice/project', 3)}` });
+    assert.equal(f.requests.length, before);
+    assert.ok(!stale.value);
+  }
+});
+
+test('A page containing only terminal work still allows scrolling to the next open personal result', async () => {
+  const f = feedFixture(async url => {
+    assert.match(url.searchParams.get('q'), /(?:^| )state:open(?: |$)/);
+    return url.searchParams.get('page') === '2'
+      ? searchBody([feedItem('team/second', 3, 'Pending on the next page')])
+      : searchBody([feedItem('alice/project', 1, 'Closed index entry', { state: 'closed' }),
+        feedItem('alice/project', 2, 'Merged index entry', { merged: true })], 200,
+      { Link: '<https://api.github.com/search/issues?page=2>; rel="next"' });
+  });
+  const initial = await f.renderReady({});
+  assert.deepEqual(itemActions(initial), []);
+  assert.equal(initial.children[0].loadMoreAction, 'more-items');
+  const next = await f.render({ action: 'more-items' });
+  assert.deepEqual(itemActions(next), [`item:${key('team/second', 3)}`]);
+  assert.equal(next.children[0].loadMoreAction, undefined);
+});
+
+test('Refreshing a newly closed Issue keeps its detail and later stale open index entries cannot restore its sidebar row', async () => {
+  let closed = false;
+  const item = feedItem('team/second', 7, 'Issue closed remotely');
+  const f = feedFixture(async url => {
+    if (url.pathname === '/search/issues') return url.searchParams.get('page') === '2'
+      ? searchBody([{ ...item, title: 'Stale open copy from the search index' }, feedItem('alice/project', 8, 'Another pending issue')])
+      : searchBody([item], 200, { Link: '<https://api.github.com/search/issues?page=2>; rel="next"' });
+    assert.equal(url.pathname, '/repos/team/second/issues/7');
+    return body({ ...item, state: closed ? 'closed' : 'open', body: 'Complete source remains readable' });
+  });
+  await f.renderReady({});
+  const initial = await f.render({ action: `item:${key('team/second', 7)}` });
+  assert.equal(initial.children[0].items.length, 1);
+  closed = true;
+  const refreshed = await f.render({ action: 'refresh-detail' });
+  assert.equal(refreshed.value, key('team/second', 7));
+  assert.equal(refreshed.children[0].value, '');
+  assert.deepEqual(itemActions(refreshed), []);
+  assert.match(texts(refreshed.children[1]), /Closed|Complete source remains readable/);
+  const appended = await f.render({ action: 'more-items' });
+  assert.equal(appended.value, key('team/second', 7));
+  assert.deepEqual(itemActions(appended), [`item:${key('alice/project', 8)}`]);
+  assert.match(texts(appended.children[1]), /Complete source remains readable/);
+  assert.doesNotMatch(texts(appended), /Stale open copy from the search index/);
+  await f.render({ action: 'close-detail' });
+  const before = f.requests.length;
+  const stale = await f.render({ action: `item:${key('team/second', 7)}` });
+  assert.equal(f.requests.length, before);
+  assert.ok(!stale.value);
 });

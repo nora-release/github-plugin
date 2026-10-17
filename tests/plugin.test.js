@@ -287,7 +287,7 @@ test('Repos and Issues are read under the connected user credentials', async () 
   assert.ok(!f.requests.some(request => new URL(request.url).pathname === '/repos/alice/project/issues'));
 });
 
-test('Issues exclude PRs and the PR view exposes draft and merged states', async () => {
+test('Issues exclude PRs and the active PR view keeps drafts while excluding merged work', async () => {
   const f = fixture({ saved: connection, route: async url => {
     if (url.pathname === '/user') return body({ login: 'alice' });
     if (url.pathname === '/user/repos') return body([repo()]);
@@ -298,12 +298,15 @@ test('Issues exclude PRs and the PR view exposes draft and merged states', async
   assert.doesNotMatch(texts(await f.renderReady({})), /Work in progress|Finished/);
   const view = await f.render({ action: 'kind', values: { kind: 'pulls' } });
   assert.match(texts(view.children[0]), /Work in progress/);
-  assert.match(texts(view.children[0]), /Finished/);
+  assert.doesNotMatch(texts(view.children[0]), /Finished/);
   assert.doesNotMatch(texts(view.children[0]), /Real issue/);
   const draft = await f.render({ action: 'item:item-alice/project/3' });
   assert.match(texts(draft.children[1]), /Draft/);
-  const merged = await f.render({ action: 'item:item-alice/project/4' });
-  assert.match(texts(merged.children[1]), /Merged/);
+  const requests = f.requests.length;
+  const unchanged = await f.render({ action: 'item:item-alice/project/4' });
+  assert.equal(f.requests.length, requests, 'A removed merged row cannot be reopened by an old sidebar action');
+  assert.ok(!unchanged.value);
+  assert.ok(!nodes(unchanged).some(node => node.id === 'item-details'));
 });
 
 test('Invalid PAT never overwrites saved credentials', async () => {
@@ -665,7 +668,7 @@ test('Account and repository utilities stay in menus and manual repository entry
   assert.ok(new URL(apiRequests(f).at(-1).url).searchParams.get('q').includes('repo:bob/other'));
 });
 
-test('Search repository and status filters stay with the issue list while account actions remain in its menu', async () => {
+test('Search repository and local filters stay with the issue list while account actions remain in its menu', async () => {
   const f = fixture({ saved: connection, route: async url => {
     if (url.pathname === '/user') return body({ login: 'alice' });
     if (url.pathname === '/user/repos') return body([repo()]);
@@ -676,7 +679,8 @@ test('Search repository and status filters stay with the issue list while accoun
   const [sidebar, main] = initial.children;
   assert.ok(nodes(sidebar).some(node => node.id === 'query' && node.placeholder === 'Search loaded items'));
   assert.ok(nodes(sidebar).some(node => node.id === 'repository' && node.value === ''));
-  assert.ok(nodes(sidebar).some(node => node.id === 'status' && node.action === 'status'));
+  assert.ok(!nodes(sidebar).some(node => node.id === 'status' || node.action === 'status' || node.action === 'all-states'));
+  assert.ok(nodes(sidebar).some(node => node.type === 'menu' && node.text === 'Filters'));
   assert.ok(nodes(main).some(node => node.action === 'refresh'));
   assert.ok(!nodes(main).some(node => node.action === 'disconnect' || node.action === 'show-other-repo' || node.id === 'query'));
   const account = sidebar.children[0];
@@ -689,7 +693,7 @@ test('Search repository and status filters stay with the issue list while accoun
   const requestCount = f.requests.length;
   const filtered = await f.render({ action: 'author', values: { author: 'bob' } });
   assert.deepEqual(Array.from(filtered.children[0].items, item => item.text), ['Settings fix']);
-  assert.match(texts(filtered.children[0]), /Open · 1 filter/);
+  assert.match(texts(filtered.children[0]), /Filters · 1/);
   assert.equal(f.requests.length, requestCount);
   const switched = await f.render({ action: 'kind:pulls' });
   assert.equal(nodes(switched.children[0]).find(node => node.id === 'view-navigation').value, 'view-pulls');
@@ -704,7 +708,7 @@ test('A selected PR has one detail header and a complete Markdown description be
     if (url.pathname === '/user') return body({ login: 'alice' });
     if (url.pathname === '/user/repos') return body([repo()]);
     return itemResponse(url, [issue(42, 'Keep the editor selection when switching pages', {
-      pull_request: {}, state: 'closed', merged_at: '2026-10-10T10:00:00Z', updated_at: '2026-10-10T10:00:00Z',
+      pull_request: {}, ...(url.pathname === '/search/issues' ? {} : { state: 'closed', merged_at: '2026-10-10T10:00:00Z' }), updated_at: '2026-10-10T10:00:00Z',
       user: { login: 'bob' }, labels: [{ name: 'native' }, { name: 'reviewed' }],
       html_url: 'https://github.com/alice/project/pull/42', body: '## Changes\nPreserve the selection.\n\n- Keep keyboard focus.'
     })]);
@@ -794,21 +798,22 @@ test('Local author label and search filters never fetch data and hide details th
   assert.equal(f.requests.length, count);
 });
 
-test('An empty GitHub view has one recovery state and changing API state retrieves real closed items', async () => {
+test('An empty GitHub view offers refresh and legacy all-states cannot retrieve closed work', async () => {
   const f = fixture({ saved: connection, route: async url => {
     if (url.pathname === '/user') return body({ login: 'alice' });
     if (url.pathname === '/user/repos') return body([repo()]);
-    return searchBody(!/(?:^| )state:(?:open|closed)(?: |$)/.test(url.searchParams.get('q') || '') ? [issue(1, 'A closed issue', { state: 'closed' })] : []);
+    assert.match(url.searchParams.get('q'), /(?:^| )state:open(?: |$)/);
+    return searchBody([]);
   } });
   const empty = await f.renderReady({});
   assert.equal(nodes(empty).filter(node => node.type === 'emptyState').length, 1);
-  assert.ok(nodes(empty).some(node => node.action === 'all-states'));
-  const all = await f.render({ action: 'all-states' });
-  assert.match(texts(all), /A closed issue/);
-  assert.doesNotMatch(new URL(apiRequests(f).at(-1).url).searchParams.get('q'), /(?:^| )state:/);
-  const item = nodes(all).find(node => node.id === 'item-alice/project/1');
-  assert.equal(item.children[0].symbol, 'checkmark.circle');
-  assert.equal(item.children[0].tone, 'accent');
+  assert.match(texts(empty), /No open Issues/);
+  assert.match(texts(empty), /No pending work in this view/);
+  assert.ok(nodes(empty).some(node => node.action === 'refresh'));
+  assert.ok(!nodes(empty).some(node => node.action === 'all-states' || node.action === 'status'));
+  const refreshed = await f.render({ action: 'all-states' });
+  assert.equal(refreshed.children[0].items.length, 0);
+  assert.match(new URL(apiRequests(f).at(-1).url).searchParams.get('q'), /(?:^| )state:open(?: |$)/);
 });
 
 test('A stale repository failure cannot replace the newest repository or its selected details', async () => {
@@ -831,7 +836,7 @@ test('A stale repository failure cannot replace the newest repository or its sel
   assert.doesNotMatch(texts(final), /denied|Couldn’t load/);
 });
 
-test('Fast Issues PR and state changes ignore late results and failures from the previous view', async () => {
+test('Fast Issues PR and legacy state events ignore late results and failures while retaining open scope', async () => {
   const started = deferred(), release = deferred();
   let feedRequests = 0;
   const f = fixture({ saved: connection, route: async url => {
@@ -840,30 +845,31 @@ test('Fast Issues PR and state changes ignore late results and failures from the
     if (++feedRequests === 2) {
       started.resolve(); await release.promise; return body({}, 404);
     }
-    return itemResponse(url, [issue(1, 'Initial Issue'), issue(2, 'Merged current PR', {
-      pull_request: {}, state: 'closed', merged_at: '2026-10-10T00:00:00Z', html_url: 'https://github.com/alice/project/pull/2' })]);
+    return itemResponse(url, [issue(1, 'Initial Issue'), issue(2, 'Current open PR', {
+      pull_request: {}, html_url: 'https://github.com/alice/project/pull/2' })]);
   } });
   await f.renderReady({});
   const earlier = f.render({ action: 'kind:pulls', values: { 'view-navigation': 'view-pulls' } });
   await started.promise;
   const latest = await f.render({ action: 'status', values: { status: 'all' } });
   assert.equal(nodes(latest).find(node => node.id === 'view-navigation').value, 'view-pulls');
-  assert.match(texts(latest), /Merged current PR/);
+  assert.match(texts(latest), /Current open PR/);
   release.resolve();
   const final = await earlier;
-  assert.equal(nodes(final).find(node => node.id === 'status').value, 'all');
+  assert.ok(!nodes(final).some(node => node.id === 'status'));
+  assert.match(new URL(apiRequests(f).at(-1).url).searchParams.get('q'), /state:open/);
   assert.doesNotMatch(texts(final), /not found|Initial Issue/);
-  assert.equal(nodes(final).find(node => node.id === 'item-alice/project/2').children[0].symbol, 'arrow.triangle.merge');
+  assert.equal(nodes(final).find(node => node.id === 'item-alice/project/2').children[0].symbol, 'arrow.triangle.pull');
 });
 
 test('The current data error remains recoverable after a local search during its request', async () => {
   const started = deferred(), release = deferred();
-  let fails = true;
+  let fails = true, feedRequests = 0;
   const f = fixture({ saved: connection, route: async url => {
     if (url.pathname === '/user') return body({ login: 'alice' });
     if (url.pathname === '/user/repos') return body([repo()]);
-    if ((url.searchParams.get('q') || '').includes('state:closed') && fails) { started.resolve(); await release.promise; return body({}, 403); }
-    return itemResponse(url, [issue(1, 'Recovered issue', { state: (url.searchParams.get('q') || '').includes('state:closed') ? 'closed' : 'open' })]);
+    if (++feedRequests > 1 && fails) { started.resolve(); await release.promise; return body({}, 403); }
+    return itemResponse(url, [issue(1, 'Recovered issue')]);
   } });
   await f.renderReady({});
   const changing = f.render({ action: 'status', values: { status: 'closed' } });
@@ -878,7 +884,8 @@ test('The current data error remains recoverable after a local search during its
   const recovered = await f.renderReady({ action: 'retry-load' });
   assert.match(texts(recovered), /Recovered issue/);
   assert.doesNotMatch(texts(recovered), /access was denied/);
-  assert.equal(nodes(recovered).find(node => node.id === 'status').value, 'closed');
+  assert.ok(!nodes(recovered).some(node => node.id === 'status'));
+  assert.match(new URL(apiRequests(f).at(-1).url).searchParams.get('q'), /state:open/);
   assert.equal(nodes(recovered).find(node => node.id === 'query').value, 'Recovered');
 });
 
@@ -998,7 +1005,7 @@ test('Hand to Nora creates a source-rich draft only from the explicit selected-d
   const f = fixture({ saved: { token: 'test_token', refreshToken: 'refresh_token' }, route: async url => {
     if (url.pathname === '/user') return body({ login: 'alice' });
     if (url.pathname === '/user/repos') return body([repo()]);
-    return itemResponse(url, [issue(42, 'Fix issue context', { body: '## Reproduction\nThe editor loses focus.', state: 'closed' })]);
+    return itemResponse(url, [issue(42, 'Fix issue context', { body: '## Reproduction\nThe editor loses focus.', ...(url.pathname === '/search/issues' ? {} : { state: 'closed' }) })]);
   } });
   await f.renderReady({});
   assert.equal(f.drafts.length, 0);
@@ -1029,7 +1036,7 @@ test('Nora draft context tracks the current repository PR and rejects stale or h
       return itemResponse(url, [repositoryIssue(url, 7, 'Selected issue')]);
     }
     return itemResponse(url, [issue(7, 'Selected pull request', {
-      pull_request: {}, state: 'closed', merged_at: '2026-10-10T00:00:00Z',
+      pull_request: {}, ...(url.pathname === '/search/issues' ? {} : { state: 'closed', merged_at: '2026-10-10T00:00:00Z' }),
       repository_url: 'https://api.github.com/repos/team/second', html_url: 'https://github.com/team/second/pull/7' })]);
   } });
   await f.renderReady({});
