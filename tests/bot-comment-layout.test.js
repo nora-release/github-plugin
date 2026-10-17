@@ -142,16 +142,61 @@ test('Disclosures retain bodies larger than the former 6 KiB preview and preserv
   assert.ok(Buffer.byteLength(collapsed(card).text) <= 64 * 1024);
 });
 
-test('Encoding and discussion limits keep explicit full-history links without cutting a disclosure closing tag', () => {
-  const tooLarge = '## Original title\n\n' + '<&`~>'.repeat(15000);
-  const card = activity(model('comments', comment(tooLarge)))[0];
-  assert.ok(!collapsed(card), 'Oversized wrappers retain the previous explicitly shortened fallback');
-  assert.ok(flatten([card]).some(value => value.text?.includes('Content shortened. View on GitHub for the full text.')));
-  assert.ok(flatten([card]).some(value => value.action?.startsWith('pr-open:')));
-  const current = model();
+test('Oversized bot content remains exact across native text pages without truncated disclosures or forced website fallback', () => {
+  const tooLarge = '## Original title\r\n\r\n' + '<&`~>🙂汉\r\n'.repeat(10000);
+  const current = model('comments', comment(tooLarge)), api = view(), parts = [];
+  current.comment.draft = 'An unfinished reply.';
+  let firstCard, lastCard, steps = 0;
+  while (true) {
+    assert.ok(++steps <= 100, 'Native text paging must terminate');
+    const content = api.nativeContent(current), card = activity(current, api)[0], nodes = flatten([card]);
+    firstCard ||= card; lastCard = card;
+    const disclosure = collapsed(card);
+    if (disclosure) {
+      assert.ok(disclosure.text.endsWith('</details>'));
+      parts.push(originalBody(disclosure));
+    } else {
+      const markdown = nodes.filter(value => value.type === 'markdown');
+      assert.equal(markdown.length, 1);
+      parts.push(markdown[0].text);
+    }
+    assert.ok(!nodes.some(value => /Content shortened|View complete history/.test(value.text || '')));
+    assert.ok(nodes.some(value => value.action?.startsWith('pr-open:')), 'The optional source link stays available');
+    assert.ok(flatten(content).some(value => value.type === 'textEditor' && value.value === current.comment.draft));
+    assert.ok(flatten(content).length <= 200);
+    assert.ok(Buffer.byteLength(JSON.stringify(content)) <= 185 * 1024);
+    const next = nodes.find(value => /^pr-body:[a-f\d]{16}:next$/.test(value.action || '') && !value.disabled);
+    if (!next) break;
+    assert.ok(api.navigateBody(current, next.action.split(':')[1], 'next'));
+  }
+  assert.ok(steps > 1);
+  assert.equal(parts.join(''), tooLarge, 'Unicode, CRLF, entities and code markers retain every original byte');
+  assert.equal(lastCard.id, firstCard.id, 'Moving through body pages keeps the comment identity stable');
+  const previous = flatten([lastCard]).find(value => /^pr-body:[a-f\d]{16}:prev$/.test(value.action || '') && !value.disabled);
+  assert.ok(previous);
+  assert.ok(api.navigateBody(current, previous.action.split(':')[1], 'prev'));
+});
+
+test('All loaded bot notifications remain reachable through native history pages with complete disclosure wrappers', () => {
+  const current = model(), api = view(), visited = new Set();
   current.sections.comments = section(Array.from({ length: 70 }, (_, index) => comment(`## Notification ${index}\n\n${'Detail. '.repeat(1000)}`, undefined, { id: index })));
-  const nodes = flatten(view().nativeContent(current));
-  assert.ok(nodes.length <= 200);
-  assert.ok(nodes.some(value => value.text === 'View complete history'));
-  for (const value of nodes.filter(value => value.type === 'markdown' && value.text.startsWith('<details>'))) assert.ok(value.text.endsWith('</details>'));
+  let pages = 0;
+  while (true) {
+    assert.ok(++pages <= 70, 'Native history pages must terminate');
+    const content = api.nativeContent(current), nodes = flatten(content);
+    assert.ok(nodes.length <= 200);
+    assert.ok(Buffer.byteLength(JSON.stringify(content)) <= 185 * 1024);
+    assert.ok(!nodes.some(value => value.text === 'View complete history'));
+    for (const value of nodes.filter(value => value.type === 'markdown' && value.text.startsWith('<details>'))) {
+      assert.ok(value.text.endsWith('</details>'));
+      const original = originalBody(value), match = /^## Notification (\d+)\n/.exec(original);
+      assert.ok(match);
+      assert.equal(original, current.sections.comments.items[Number(match[1])].body);
+      visited.add(Number(match[1]));
+    }
+    if (!nodes.some(value => value.action === 'pr-discussion-next' && !value.disabled)) break;
+    assert.ok(api.navigateDiscussion(current, 'next'));
+  }
+  assert.ok(pages > 1);
+  assert.deepEqual([...visited].sort((left, right) => left - right), Array.from({ length: 70 }, (_, index) => index));
 });

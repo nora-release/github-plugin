@@ -111,16 +111,117 @@ test('Initial section errors can retry independently, including repository permi
   assert.equal(f.api.current.sections.comments.loaded, true);
 });
 
-test('List cap stops pagination with an explicit complete-history notice', async () => {
-  const f = controller({ read: async path => path.includes('/issues/1/comments?') ? result(Array.from({ length: 230 }, (_, id) => ({ id: id + 1, body: `Comment ${id}` })), { link: '<https://api.github.com/next?page=2>; rel="next"' }) : defaultRead(path) });
-  await f.open();
-  const section = f.api.current.sections.comments;
+test('Non-discussion lists retain their existing cap and explicit complete-history notice', async () => {
+  const f = controller({ read: async path => path.includes('/pulls/1/files?') ? result(Array.from({ length: 230 }, (_, id) => ({ filename: `file-${id}.js` })), { link: '<https://api.github.com/next?page=2>; rel="next"' }) : defaultRead(path) });
+  await f.open(); await f.api.selectTab('files');
+  const section = f.api.current.sections.files;
   assert.equal(section.items.length, 200);
   assert.equal(section.nextPage, null);
   assert.match(section.notice, /first 200/);
   const requests = f.requests.length;
-  await f.api.more('comments');
+  await f.api.more('files');
   assert.equal(f.requests.length, requests);
+});
+
+const discussionPaths = {
+  comments: '/issues/1/comments', reviews: '/pulls/1/reviews',
+  reviewComments: '/pulls/1/comments', timeline: '/issues/1/timeline', commits: '/pulls/1/commits',
+};
+const discussionSource = path => Object.keys(discussionPaths).find(name => path.includes(`${discussionPaths[name]}?`));
+const pageNumber = path => Number(new URL(path, 'https://api.github.com').searchParams.get('page'));
+const nextLink = page => ({ link: `<https://api.github.com/next?page=${page}>; rel="next"` });
+
+test('Every discussion source and the Commits tab retain all paginated records past 200', async () => {
+  for (const name of Object.keys(discussionPaths)) {
+    const f = controller({ read: async path => {
+      if (discussionSource(path) !== name) return defaultRead(path);
+      const page = pageNumber(path), count = page === 8 ? 12 : 30;
+      return result(Array.from({ length: count }, (_, offset) => {
+        const id = (page - 1) * 30 + offset + 1;
+        return { id, body: `Entry ${id}`, sha: id.toString(16).padStart(40, '0') };
+      }), page < 8 ? nextLink(page + 1) : {});
+    } });
+    await f.open();
+    if (name === 'commits') await f.api.selectTab('commits');
+    for (let page = 2; page <= 8; page++) {
+      assert.equal(f.api.current.sections[name].nextPage, page, name);
+      await f.api.more(name);
+    }
+    const section = f.api.current.sections[name];
+    assert.equal(section.items.length, 222, name);
+    assert.deepEqual(Array.from(section.items, entry => entry.id), Array.from({ length: 222 }, (_, index) => index + 1), name);
+    assert.equal(section.nextPage, null, name);
+    assert.equal(section.notice, '', name);
+    const count = f.requests.length;
+    await f.api.more(name);
+    assert.equal(f.requests.length, count, `${name} must stop at the actual last page`);
+  }
+});
+
+test('Unified discussion loading runs pending sources concurrently and retries only their failed pages', async () => {
+  const starts = Object.fromEntries(['comments', 'reviews', 'timeline'].map(name => [name, deferred()]));
+  const release = deferred(), attempts = {};
+  const f = controller({ read: async path => {
+    const name = discussionSource(path);
+    if (!name || name === 'commits') return defaultRead(path);
+    const page = pageNumber(path), key = `${name}:${page}`;
+    attempts[key] = (attempts[key] || 0) + 1;
+    if (name === 'comments' && attempts[key] === 1) throw httpError('Comments access denied.', 403);
+    if (name === 'reviewComments') return result([{ id: 1, body: 'Already complete.' }]);
+    if (page === 1 && name !== 'comments') return result([{ id: 1, body: `First ${name}` }], nextLink(2));
+    starts[name].resolve();
+    await release.promise;
+    if (name === 'reviews' && attempts[key] === 1) throw httpError('Reviews temporarily rate limited.', 429);
+    return result([{ id: page, body: `Loaded ${name}` }]);
+  } });
+  await f.open(); f.api.setCommentDraft('Keep this draft.');
+  const count = f.requests.length, operation = f.api.moreDiscussion();
+  await Promise.all(Object.values(starts).map(start => start.promise));
+  assert.equal(f.requests.length, count + 3);
+  await f.api.moreDiscussion();
+  assert.equal(f.requests.length, count + 3, 'Repeated clicks must not duplicate pending requests');
+  release.resolve(); await operation;
+  assert.equal(f.api.current.sections.comments.items[0].body, 'Loaded comments');
+  assert.equal(f.api.current.sections.timeline.items.length, 2);
+  assert.equal(f.api.current.sections.reviews.items[0].body, 'First reviews');
+  assert.equal(f.api.current.sections.reviews.nextPage, 2);
+  assert.match(f.api.current.sections.reviews.error, /rate limited/);
+  await f.api.moreDiscussion();
+  assert.equal(f.requests.length, count + 4, 'Completed sources must not reload during another source’s retry');
+  assert.equal(f.api.current.sections.reviews.items.length, 2);
+  assert.equal(f.api.current.sections.reviews.error, '');
+  assert.equal(f.api.current.comment.draft, 'Keep this draft.');
+  await f.api.moreDiscussion();
+  assert.equal(f.requests.length, count + 4);
+  assert.equal(f.writes.length, 0);
+});
+
+test('Unified discussion responses cannot reach another PR, a refreshed generation, or a disconnected account', async () => {
+  for (const change of ['selection', 'refresh', 'reset']) {
+    const names = ['comments', 'reviews', 'reviewComments', 'timeline'];
+    const starts = Object.fromEntries(names.map(name => [name, deferred()])), release = deferred();
+    const f = controller({ read: async path => {
+      const name = discussionSource(path);
+      if (!names.includes(name)) return defaultRead(path);
+      if (pageNumber(path) === 1) return result([{ id: 1, body: `Initial ${name}` }], nextLink(2));
+      starts[name].resolve(); await release.promise;
+      return result([{ id: 2, body: `Late ${name}` }]);
+    } });
+    await f.open();
+    const original = f.api.current, operation = f.api.moreDiscussion();
+    await Promise.all(Object.values(starts).map(start => start.promise));
+    if (change === 'selection') await f.open(pull(2));
+    else if (change === 'refresh') await f.api.refresh();
+    else f.api.reset();
+    release.resolve(); await operation;
+    assert.ok(f.api.current !== original, change);
+    for (const name of names) {
+      assert.ok(!original.sections[name].items.some(entry => entry.id === 2), change);
+      assert.ok(!f.api.current?.sections[name].items.some(entry => entry.id === 2), change);
+    }
+    if (change === 'reset') assert.equal(f.api.current, null);
+    assert.equal(f.writes.length, 0);
+  }
 });
 
 test('Commit timeline records without numeric IDs deduplicate by their SHA', async () => {
@@ -187,6 +288,38 @@ test('Comments require scoped authorization and preserve exact whitespace on suc
   assert.equal(f.api.current.comment.draft, '');
   assert.equal(f.api.current.sections.comments.items[0].id, 100);
   assert.match(f.api.current.comment.notice, /posted/);
+});
+
+test('Posting a comment keeps every previously loaded comment and the remaining history cursor', async () => {
+  const f = controller({
+    read: async path => {
+      if (discussionSource(path) !== 'comments') return defaultRead(path);
+      const page = pageNumber(path), count = page === 8 ? 10 : 30;
+      const entries = Array.from({ length: count }, (_, offset) => {
+        const id = (page - 1) * 30 + offset + 1;
+        return { id, body: `Historical comment ${id}` };
+      });
+      if (page === 8) entries.push({ id: 500, body: 'New comment.' });
+      return result(entries, page < 8 ? nextLink(page + 1) : {});
+    },
+    write: async (_path, _method, payload) => ({ status: 201, data: { id: 500, body: payload.body } }),
+  });
+  await f.open();
+  for (let page = 2; page <= 7; page++) await f.api.moreDiscussion();
+  assert.equal(f.api.current.sections.comments.items.length, 210);
+  f.api.setCommentDraft('New comment.'); await f.api.postComment({ authorized: true });
+  const comments = f.api.current.sections.comments;
+  assert.equal(comments.items.length, 211);
+  assert.equal(comments.items[0].id, 1);
+  assert.equal(comments.items.at(-1).id, 500);
+  assert.equal(comments.nextPage, 8);
+  assert.equal(f.api.current.comment.draft, '');
+  await f.api.moreDiscussion();
+  assert.equal(comments.items.length, 221);
+  assert.deepEqual(Array.from(comments.items, entry => entry.id).sort((a, b) => a - b), [...Array.from({ length: 220 }, (_, index) => index + 1), 500]);
+  assert.equal(comments.nextPage, null);
+  assert.equal(comments.notice, '');
+  assert.equal(f.writes.length, 1);
 });
 
 test('Blank and oversized comments are rejected, HTTP failure keeps the draft for explicit retry', async () => {
@@ -478,19 +611,39 @@ test('A full PR feed with large discussion and typed draft stays within native w
   const selected = await f.render({ action: 'item:item-alice/project/400' });
   const editor = nodes(selected).find(node => node.type === 'textEditor' && node.id.startsWith('pr-comment-'));
   assert.ok(editor);
-  const workspace = await f.render({ action: 'pr-tab:discussion', values: { [editor.id]: draft } });
+  let workspace = await f.render({ action: 'pr-tab:discussion', values: { [editor.id]: draft } });
   const normalized = value => ({ ...value, options: value.options || [], disabled: value.disabled || false,
     children: (value.children || []).map(normalized), items: (value.items || []).map(normalized) });
-  const encoded = JSON.stringify(normalized(workspace)).replace(/\//g, '\\/');
-  assert.ok(nodes(workspace).length <= 1000, `Native node count: ${nodes(workspace).length}`);
-  assert.ok(Buffer.byteLength(encoded, 'utf8') <= 512 * 1024, `Native encoded bytes: ${Buffer.byteLength(encoded, 'utf8')}`);
-  assert.equal(workspace.type, 'workspace');
-  assert.equal(workspace.value, 'item-alice/project/400');
-  assert.ok(nodes(workspace).some(node => node.action === 'item:item-alice/project/1'), 'First loaded row remains in the visible prefix');
-  assert.ok(nodes(workspace).some(node => node.action === 'item:item-alice/project/400'), 'Selected last row survives sidebar shortening');
-  assert.equal(nodes(workspace).find(node => node.id === editor.id)?.value, draft, 'Typed comment draft is preserved without truncation');
-  assert.ok(nodes(workspace).some(node => node.type === 'markdown' && node.text === description), 'Original 63 KiB description is readable');
-  assert.ok(nodes(workspace).some(node => node.type === 'markdown' && node.text.startsWith('Comment ')), 'Discussion retains actual comment content');
+  const checkWorkspace = () => {
+    const encoded = JSON.stringify(normalized(workspace)).replace(/\//g, '\\/');
+    assert.ok(nodes(workspace).length <= 1000, `Native node count: ${nodes(workspace).length}`);
+    assert.ok(Buffer.byteLength(encoded, 'utf8') <= 512 * 1024, `Native encoded bytes: ${Buffer.byteLength(encoded, 'utf8')}`);
+    assert.equal(workspace.type, 'workspace');
+    assert.equal(workspace.value, 'item-alice/project/400');
+    assert.ok(nodes(workspace).some(node => node.action === 'item:item-alice/project/1'), 'First loaded row remains in the visible prefix');
+    assert.ok(nodes(workspace).some(node => node.action === 'item:item-alice/project/400'), 'Selected last row survives sidebar shortening');
+    assert.equal(nodes(workspace).find(node => node.id === editor.id)?.value, draft, 'Typed comment draft is preserved without truncation');
+    assert.ok(nodes(workspace).some(node => node.type === 'markdown' && node.text.startsWith('Comment ')), 'Discussion retains actual comment content');
+    return nodes(workspace).find(node => node.id === 'pr-description');
+  };
+  const parts = [];
+  for (;;) {
+    const card = checkWorkspace();
+    assert.ok(card);
+    parts.push(nodes(card).filter(node => node.type === 'markdown').map(node => node.text).join(''));
+    assert.ok(parts.length < 20, 'Description paging must reach its end');
+    const next = nodes(card).find(node => node.action?.startsWith('pr-body:') && node.action.endsWith(':next') && !node.disabled);
+    if (!next) break;
+    workspace = await f.render({ action: next.action });
+  }
+  assert.ok(parts.length > 1, 'Large descriptions use internal text pages');
+  assert.equal(parts.join(''), description, 'All of the original 63 KiB description remains readable inside Nora');
+  for (let index = parts.length - 2; index >= 0; index--) {
+    const previous = nodes(checkWorkspace()).find(node => node.action?.startsWith('pr-body:') && node.action.endsWith(':prev') && !node.disabled);
+    assert.ok(previous);
+    workspace = await f.render({ action: previous.action });
+    assert.equal(nodes(checkWorkspace()).filter(node => node.type === 'markdown').map(node => node.text).join(''), parts[index]);
+  }
 });
 
 test('Native PR reading controls preserve the draft across jobs, sources and merge preparation without writing to GitHub', async () => {

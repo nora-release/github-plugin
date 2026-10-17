@@ -3,6 +3,8 @@
   'use strict';
   function createPullRequestDetails({ api, write, t, boundedText, githubURL, isCurrent, onUpdated }) {
     const names = ['repository', 'comments', 'reviews', 'reviewComments', 'timeline', 'checks', 'statuses', 'workflows', 'commits', 'files'];
+    const discussionSources = ['comments', 'reviews', 'reviewComments', 'timeline'];
+    const completeHistorySources = new Set([...discussionSources, 'commits']);
     const pageSize = 30, maximumRows = 200;
     const section = () => ({ items: [], loaded: false, loading: false, error: '', nextPage: null, notice: '' });
     const invalid = () => new Error(t('GitHub returned an invalid PR response.', 'GitHub 返回了无效的 PR 结果。'));
@@ -66,12 +68,12 @@
         if (name === 'repository' && result.data?.full_name?.toLowerCase() !== record.repo.toLowerCase()) throw invalid();
         const incoming = responseItems(name, result.data).filter(item => !requiresHead || !item.head_sha || item.head_sha.toLowerCase() === head);
         const items = deduplicate(name, [...(append ? target.items : []), ...incoming]);
-        target.items = items.slice(0, maximumRows);
+        target.items = completeHistorySources.has(name) ? items : items.slice(0, maximumRows);
         if (name === 'repository') target.data = result.data;
         if (name === 'statuses') target.state = result.data.state;
         target.loaded = true;
         target.nextPage = nextPage(result.headers, requestedPage);
-        if (items.length >= maximumRows && (target.nextPage || items.length > maximumRows)) {
+        if (!completeHistorySources.has(name) && items.length >= maximumRows && (target.nextPage || items.length > maximumRows)) {
           target.nextPage = null;
           target.notice = t(`Showing the first ${maximumRows} entries. Open GitHub for the complete history.`, `已显示前 ${maximumRows} 条，完整记录请在 GitHub 查看。`);
         }
@@ -122,6 +124,15 @@
       if (target.nextPage) await load(model, name, { append: true });
       else if (target.error || !target.loaded) await load(model, name);
     }
+    async function moreDiscussion() {
+      const record = model;
+      if (!record || !active(record)) return;
+      await Promise.all(discussionSources.map(name => {
+        const target = record.sections[name];
+        if (target.nextPage) return load(record, name, { append: true });
+        if (target.error || !target.loaded) return load(record, name);
+      }));
+    }
     async function jobs(runID) {
       if (!model || !Number.isSafeInteger(runID) || runID < 1 || !model.sections.workflows.items.some(run => run.id === runID && shaFor({ head: { sha: run.head_sha } }) === model.headSHA)) return;
       const record = model;
@@ -158,7 +169,7 @@
         if (result.status !== 201 || !result.data || !Number.isSafeInteger(result.data.id) || result.data.id < 1 || typeof result.data.body !== 'string') {
           const error = invalid(); error.status = result.status; error.uncertain = result.status === 201; throw error;
         }
-        record.sections.comments.items = deduplicate('comments', [...record.sections.comments.items, result.data]).slice(-maximumRows);
+        record.sections.comments.items = deduplicate('comments', [...record.sections.comments.items, result.data]);
         comment.draft = ''; comment.fieldID = `pr-comment-${record.key}-${++clearRevision}`; comment.uncertain = false;
         comment.notice = t('Comment posted.', '留言已发表。');
       } catch (error) {
@@ -274,7 +285,7 @@
       if (url) lines.push(`${t('Source', '来源')}: ${url}`);
       return boundedText(lines.join('\n'), 14 * 1024, '\n…');
     }
-    return { get current() { return model; }, reset() { ++revision; model = null; }, open, selectTab, refresh, more, jobs, setCommentDraft, postComment, prepareMerge, confirmMerge, cancelMerge, context };
+    return { get current() { return model; }, reset() { ++revision; model = null; }, open, selectTab, refresh, more, moreDiscussion, jobs, setCommentDraft, postComment, prepareMerge, confirmMerge, cancelMerge, context };
   }
   function createPullRequestView({ node, t, boundedText, displayedBody, short, itemStatus, itemDate, avatarFor = () => null, onAuthorButton = () => {}, currentUser = () => null, supportsTextEditor = true, supportsNativeLayout = false, supportsNativeDiff = false, supportsNativeTimeline = false, supportsDetailAside = false, supportsItemRowIcon = false, supportsButtonIcon = false, supportsTabBarSummary = false, now = () => Date.now() }) {
     const commitGroupIconSVG = '<svg xmlns="http://www.w3.org/2000/svg" width="32" height="32" viewBox="0 0 24 24"><g fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5"><circle cx="12" cy="12" r="3"/><path d="M9 12H3m12 0h6"/></g></svg>';
@@ -352,22 +363,138 @@
       };
       return bytes(JSON.stringify(value.map(normalize)).replace(/\//g, '\\/'));
     };
-    const commitGroupRows = new WeakMap();
-    function fittedCommitGroup(card, maximumNodes, maximumBytes) {
-      const group = commitGroupRows.get(card);
-      if (!group || countNodes(card) <= maximumNodes && encodedSize([card]) <= maximumBytes) return card;
-      const kept = [], header = card.children[0];
-      const notice = count => text(t(`Showing ${count} of ${group.rows.length} loaded commits.`, `显示已加载的 ${group.rows.length} 次提交中的 ${count} 次。`));
-      const link = button(t('View all commits', '查看全部提交'), 'pr-tab:commits', { symbol: 'chevron.right' });
-      const fixed = [header, notice(group.rows.length), link];
-      let nodes = 1 + fixed.reduce((sum, child) => sum + countNodes(child), 0), size = encodedSize([node('column', { id: card.id }, fixed)]);
-      if (nodes > maximumNodes || size > maximumBytes) return null;
-      for (const child of group.rows) {
-        const childNodes = countNodes(child), childBytes = encodedSize([child]);
-        if (nodes + childNodes > maximumNodes || size + childBytes > maximumBytes) break;
-        kept.push(child); nodes += childNodes; size += childBytes;
+    const stableKey = value => {
+      let left = 2166136261, right = 2246822507;
+      for (const character of String(value)) {
+        const point = character.codePointAt(0);
+        left = Math.imul(left ^ point, 16777619); right = Math.imul(right ^ point, 3266489917);
       }
-      return node('column', { id: card.id }, [header, ...kept, notice(kept.length), link]);
+      return (left >>> 0).toString(16).padStart(8, '0') + (right >>> 0).toString(16).padStart(8, '0');
+    };
+    const activityKey = value => {
+      if (value.entries) return activityKey(value.entries[0]);
+      const entry = value.entry;
+      const commit = value.source === 'commits' || value.source === 'timeline' && entry.event === 'committed';
+      const identity = commit ? String(entry.sha || entry.commit_id || '').toLowerCase() : entry.node_id ?? entry.id;
+      return `${value.source}:${identity ?? `${value.timestamp}:${entry.event || ''}:${entry.commit_id || ''}:${entry.body || ''}`}`;
+    };
+    const paging = model => model.nativePages || (model.nativePages = {});
+    const bodyPaging = model => model.nativeBodyPages || (model.nativeBodyPages = {});
+    function bodyParts(value, maximum) {
+      const parts = []; let part = '', size = 0;
+      for (const character of String(value || '')) {
+        const length = bytes(character);
+        if (size + length > maximum) {
+          const paragraph = part.lastIndexOf('\n\n'), line = part.lastIndexOf('\n');
+          const boundary = paragraph >= part.length / 3 ? paragraph + 2 : line >= part.length / 3 ? line + 1 : part.length;
+          parts.push(part.slice(0, boundary)); part = part.slice(boundary); size = bytes(part);
+        }
+        part += character; size += length;
+      }
+      parts.push(part);
+      return parts;
+    }
+    function fencedBodyPart(parts, index) {
+      let fence = null;
+      const scan = value => {
+        for (const line of value.split(/\r?\n/)) {
+          const marker = /^[ \t]{0,3}(`{3,}|~{3,})(.*)$/.exec(line);
+          if (!marker) continue;
+          if (!fence) fence = { marker: marker[1], info: marker[2] };
+          else if (marker[1][0] === fence.marker[0] && marker[1].length >= fence.marker.length && !marker[2].trim()) fence = null;
+        }
+      };
+      for (let offset = 0; offset < index; offset++) scan(parts[offset]);
+      const prefix = fence ? `${fence.marker}${fence.info}\n` : '';
+      scan(parts[index]);
+      const suffix = index + 1 < parts.length && fence ? `\n${fence.marker}` : '';
+      return prefix + parts[index] + suffix;
+    }
+    function bodyPage(model, identity, value, render = value => [node('markdown', { text: value })]) {
+      const maximum = bytes(JSON.stringify(model.comment?.draft || '')) > 96 * 1024 ? 4 * 1024 : 12 * 1024;
+      const key = stableKey(identity), parts = bodyParts(value, maximum), pages = bodyPaging(model);
+      const current = pages[key] || { index: 0 };
+      if (current.maximum && current.maximum !== maximum) {
+        let offset = 0;
+        current.index = parts.findIndex(part => { offset += part.length; return offset > (current.offset || 0); });
+      }
+      current.index = Math.min(Math.max(0, current.index), parts.length - 1); current.total = parts.length;
+      current.maximum = maximum; current.offset = parts.slice(0, current.index).reduce((sum, part) => sum + part.length, 0);
+      pages[key] = current;
+      const result = render(fencedBodyPart(parts, current.index));
+      if (parts.length > 1) result.push(row([
+        button(t('Previous text', '上段正文'), `pr-body:${key}:prev`, { symbol: 'chevron.up', disabled: current.index === 0 }),
+        text(`${current.index + 1} / ${parts.length}`),
+        button(t('Next text', '下段正文'), `pr-body:${key}:next`, { symbol: 'chevron.down', disabled: current.index + 1 >= parts.length }),
+      ]));
+      return result;
+    }
+    function navigateBody(model, key, direction) {
+      const page = model.nativeBodyPages?.[key];
+      if (!page || !['prev', 'next'].includes(direction)) return false;
+      const index = page.index + (direction === 'prev' ? -1 : 1);
+      if (index < 0 || index >= page.total) return false;
+      page.index = index; return true;
+    }
+    function navigatePage(model, name, direction) {
+      const page = model.nativePages?.[name];
+      if (!page || !['prev', 'next'].includes(direction) || !(direction === 'prev' ? page.hasPrevious : page.hasNext)) return false;
+      page.anchor = direction === 'prev' ? page.first : page.last;
+      page.request = direction;
+      return true;
+    }
+    const navigateDiscussion = (model, direction) => navigatePage(model, 'discussion', direction);
+    const navigateCommits = (model, direction) => navigatePage(model, 'commits', direction);
+    const navigateCommitGroup = (model, key, direction) => /^[a-f\d]{16}$/.test(key) && navigatePage(model, `group-${key}`, direction);
+    function pageControls(name, state, total, actions, labels) {
+      if (!state.hasPrevious && !state.hasNext) return [];
+      return [node('row', { id: `pr-page-${name}` }, [
+        button(labels[0], actions[0], { symbol: 'chevron.up', disabled: !state.hasPrevious }),
+        text(`${state.start + 1}–${state.end + 1} / ${total}`),
+        button(labels[1], actions[1], { symbol: 'chevron.down', disabled: !state.hasNext }),
+      ])];
+    }
+    function budgetPage(model, name, values, render, fixed, actions, labels, limits = {}) {
+      const states = paging(model), state = states[name] || {};
+      if (!values.length) return { cards: [], controls: [], state };
+      const keys = values.map(activityKey);
+      const matches = (value, key) => activityKey(value) === key || value.entries?.some(entry => activityKey(entry) === key);
+      const anchor = state.anchor ? values.findIndex(value => matches(value, state.anchor)) : 0;
+      const backward = state.request === 'prev';
+      let start = anchor < 0 ? 0 : anchor;
+      if (backward) start--;
+      else if (state.request === 'next') start++;
+      start = Math.max(0, Math.min(start, Math.max(0, values.length - 1)));
+      // Reserve the complete navigation row before fitting any entries. It must remain reachable at the limit.
+      const navigation = pageControls(name, { hasPrevious: true, hasNext: true, start: 0, end: values.length }, values.length, actions, labels);
+      const maximumNodes = limits.nodes ?? 200, maximumBytes = limits.bytes ?? 185 * 1024;
+      let remainingNodes = maximumNodes - [...fixed, ...navigation].reduce((sum, value) => sum + countNodes(value), 0);
+      let remainingBytes = maximumBytes - encodedSize([...fixed, ...navigation]);
+      const kept = [], indexes = [];
+      for (let index = start; index >= 0 && index < values.length; index += backward ? -1 : 1) {
+        const card = render(values[index], index, remainingNodes, remainingBytes);
+        if (!card) break;
+        const nodes = countNodes(card), size = encodedSize([card]);
+        if (nodes > remainingNodes || size > remainingBytes) break;
+        kept.push(card); indexes.push(index); remainingNodes -= nodes; remainingBytes -= size;
+      }
+      if (!kept.length) return { cards: [], controls: [], state };
+      if (backward) { kept.reverse(); indexes.reverse(); }
+      const first = indexes[0], last = indexes.at(-1);
+      Object.assign(state, { anchor: keys[first], request: '', first: keys[first], last: keys[last], start: first, end: last,
+        hasPrevious: first > 0, hasNext: values.length > 0 && last + 1 < values.length });
+      states[name] = state;
+      return { cards: kept, controls: pageControls(name, state, values.length, actions, labels), state };
+    }
+    function discussionState(model, sources) {
+      const pending = sources.some(([name]) => section(model, name).loading);
+      const errors = sources.filter(([name]) => section(model, name).error);
+      const more = sources.some(([name]) => section(model, name).nextPage || section(model, name).error || !section(model, name).loaded);
+      const result = errors.map(([name, label]) => text(`${label}: ${short(section(model, name).error, 400)}`, 'caption', 'warning'));
+      result.push(...sources.filter(([name]) => section(model, name).notice).map(([name, label]) => text(`${label}: ${short(section(model, name).notice, 400)}`)));
+      if (more || pending) result.push(button(pending ? t('Loading activity…', '正在加载动态…') : errors.length ? t('Retry activity', '重试加载动态') : t('Load more activity', '加载更多动态'),
+        'pr-discussion-load', { symbol: 'arrow.down.circle', disabled: pending }));
+      return result;
     }
     const fit = (model, header, cards, footer, suffix, preferRecent = false, reservedNodes = 0) => {
       const overflow = [badge(t('More activity is available on GitHub.', '还有更多内容，可在 GitHub 查看。'), 'muted'), open(model, t('View complete history', '查看完整内容'), prURL(model) + suffix, suffix)];
@@ -376,8 +503,7 @@
       let nodes = reservedNodes + aside.reduce((sum, value) => sum + countNodes(value), 0) + fixed.reduce((sum, value) => sum + countNodes(value), 0), size = encodedSize([...fixed, ...aside]);
       const kept = [];
       for (const card of preferRecent ? cards.slice().reverse() : cards) {
-        const candidate = fittedCommitGroup(card, 200 - nodes, 185 * 1024 - size);
-        if (!candidate) break;
+        const candidate = card;
         const nextNodes = countNodes(candidate), nextSize = encodedSize([candidate]);
         if (nodes + nextNodes > 200 || size + nextSize > 185 * 1024) break;
         kept.push(candidate); nodes += nextNodes; size += nextSize;
@@ -560,6 +686,20 @@
         if (count <= 400) break;
         if (currentKeys.has(key)) continue;
         members.delete(key); expanded.delete(key); count -= commits.size;
+      }
+      const pages = paging(model);
+      for (const key of currentKeys) {
+        if (pages[`group-${key}`]) continue;
+        for (const [previous, commits] of previousMembers) {
+          const page = pages[`group-${previous}`];
+          if (!page?.anchor || ![...members.get(key)].some(sha => commits.has(sha))) continue;
+          const anchorSHA = page.anchor.startsWith('timeline:') ? page.anchor.slice('timeline:'.length) : '';
+          if (!members.get(key).has(anchorSHA)) continue;
+          pages[`group-${key}`] = { ...page }; break;
+        }
+      }
+      for (const name of Object.keys(pages)) {
+        if (name.startsWith('group-') && !members.has(name.slice('group-'.length))) delete pages[name];
       }
       model.commitGroupMembers = members;
       model.expandedCommitGroups = expanded;
@@ -895,7 +1035,7 @@
         return node('timelineItem', { id, value: 'comment' }, [
           authorButton(model, model.item || {}, sourceURL),
           row([...(created ? [text(t(`opened ${created}`, `创建于 ${created}`))] : []), node('spacer'), ...(association ? [badge(association)] : [])]),
-          column([...(!hasDetailAside(model) && labels.length ? [text(labels.join(' · '))] : []), node('markdown', { text: displayedBody(model.item?.body) })]),
+          column([...(!hasDetailAside(model) && labels.length ? [text(labels.join(' · '))] : []), ...bodyPage(model, id, model.item?.body || displayedBody(''))]),
         ]);
       }
       return node('column', { id, appearance: 'secondary' }, [
@@ -948,17 +1088,16 @@
       return fit(model, [description], groupedCards, footer, '', true);
     }
     function timelineDiscussion(model) {
-      const commentBody = (source, entry) => {
-        const body = String(entry.body || '');
+      const commentBody = (source, entry) => bodyPage(model, `${source}:${entry.node_id || entry.id}`, entry.body, body => {
         const isBot = entry.user?.type === 'Bot' || /^[a-z\d][a-z\d-]*\[bot\]$/i.test(entry.user?.login || '');
         const tableDivider = /^[ \t]*\|?[ \t]*:?-{3,}:?[ \t]*(?:\|[ \t]*:?-{3,}:?[ \t]*)+\|?[ \t]*$/m;
         const complex = /(?:^|\n)[ \t]{0,3}(?:`{3,}|~{3,}|\|)|(?:^|\n)[ \t]{4}\S|<(?:table|details|pre)\b/i.test(body) || tableDivider.test(body);
-        if (source !== 'comments' || !isBot || Array.from(body).length <= 200 && !complex) return [markdown(body, 6 * 1024)];
+        if (source !== 'comments' || !isBot || Array.from(body).length <= 200 && !complex) return [node('markdown', { text: body })];
         // Keep the first HTML pass from interpreting user tags or extracting code before the body is decoded and parsed as Markdown.
         const entities = { '&': '&amp;', '<': '&lt;', '>': '&gt;', '`': '&#96;', '~': '&#126;', '\r': '&#13;', '\n': '&#10;' };
         const encoded = body.replace(/[&<>`~\r\n]/g, character => entities[character]);
         const collapsed = `<details><summary>${t('View full comment', '查看完整留言')}</summary>${encoded}</details>`;
-        if (bytes(collapsed) > 64 * 1024) return [markdown(body, 6 * 1024)];
+        if (bytes(collapsed) > 32 * 1024) return [node('markdown', { text: body })];
         const firstSourceBlock = body.replace(/^(?:[ \t]*(?:\r?\n|<!--[\s\S]*?-->))+/, '').split(/\r?\n[ \t]*\r?\n/)[0];
         const firstBlock = firstSourceBlock.trim();
         const heading = /^(?:#{1,6})[ \t]+([^\r\n]+?)(?:[ \t]+#+)?$/.exec(firstBlock.split(/\r?\n/)[0]);
@@ -968,7 +1107,7 @@
           && !/^!\[[^\]]*\]\(/.test(summary) && !tableDivider.test(summary)
           && !/<(?:details|summary|table|pre|script)\b|<\//i.test(summary);
         return [...(suitable ? [markdown(summary, 1024)] : []), node('markdown', { text: collapsed })];
-      };
+      });
       const { sources, activity } = discussionActivity(model);
       const entries = groupedActivity(model, activity);
       const activityRow = ({ source, entry }, id) => {
@@ -983,7 +1122,7 @@
             metadata.push(button(short(sha, 8), openAction(url, prURL(model) + '/commits')));
           }
           if (created) metadata.push(text(created));
-          if (entry.dismissed_review?.dismissal_message) body.push(markdown(entry.dismissed_review.dismissal_message, 2048));
+          if (entry.dismissed_review?.dismissal_message) body.push(...bodyPage(model, `dismissal:${entry.id}`, entry.dismissed_review.dismissal_message));
         } else {
           if (created) metadata.push(text(created));
           if (source === 'reviews') metadata.push(reviewState(entry.state));
@@ -996,28 +1135,33 @@
           authorButton(model, entry, prURL(model)), row(metadata), ...(body.length ? [column(body)] : []),
         ]);
       };
-      const cards = entries.slice(-80).map((value, index) => {
-        if (!value.entries) return activityRow(value, `pr-activity-${index}`);
+      const description = nativeDescription(model);
+      const footer = discussionState(model, sources);
+      if (!hasDetailAside(model)) footer.push(nativeReadiness(model));
+      footer.push(...nativeCommentComposer(model));
+      const aside = hasDetailAside(model) ? nativeAside(model) : [];
+      const extra = model.mergeExpanded || model.merge?.pending ? [column(mergeActions(model))] : [];
+      const render = (value, index, maximumNodes, maximumBytes) => {
+        if (!value.entries) return activityRow(value, `pr-activity-${stableKey(activityKey(value))}`);
         const expanded = model.expandedCommitGroups.has(value.key);
         const lastDate = relativeDate(value.entries.at(-1).entry);
         const header = nativeRow(t(`${value.entries.length} commits`, `${value.entries.length} 次提交`), '', {
           id: `pr-commit-group-header-${value.key}`, action: `pr-commits:${value.key}`, symbol: 'circle.and.line.horizontal', appearance: 'secondary', tone: 'muted',
           ...(supportsItemRowIcon ? { iconSVG: commitGroupIconSVG } : {}),
         }, lastDate ? [text(lastDate)] : []);
-        const rows = expanded ? value.entries.map((entry, offset) => activityRow(entry, `pr-group-commit-${value.key}-${offset}`)) : [];
-        const card = node('column', { id: `pr-commit-group-${value.key}` }, [header, ...rows]);
-        if (expanded) commitGroupRows.set(card, { rows });
-        return card;
-      });
-      const footer = sources.flatMap(([name, label]) => sectionState(model, name, label));
-      if (entries.length > 80) footer.push(text(t('Showing part of the loaded history. View the full conversation on GitHub.', '这里只显示部分已加载记录，完整讨论可在 GitHub 查看。')));
-      if (!hasDetailAside(model)) footer.push(nativeReadiness(model));
-      footer.push(...nativeCommentComposer(model));
-      const fitted = fit(model, [nativeDescription(model)], cards, footer, '', true, 1);
-      const start = hasDetailAside(model) ? 1 : 0;
-      const end = fitted.findIndex((value, index) => index >= start && (value.type !== 'timelineItem' && !value.id?.startsWith('pr-commit-group-') || value.id === 'pr-comment-composer'));
-      const threadEnd = end < 0 ? fitted.length : end;
-      return [...fitted.slice(0, start), node('column', { id: 'pr-conversation' }, fitted.slice(start, threadEnd)), ...fitted.slice(threadEnd)];
+        if (!expanded) return node('column', { id: `pr-commit-group-${value.key}` }, [header]);
+        const page = budgetPage(model, `group-${value.key}`, value.entries,
+          entry => activityRow(entry, `pr-group-commit-${value.key}-${stableKey(activityKey(entry))}`), [header, column([])],
+          [`pr-group-page:${value.key}:prev`, `pr-group-page:${value.key}:next`], [t('Previous commits', '上段提交'), t('Next commits', '下段提交')],
+          { nodes: maximumNodes, bytes: maximumBytes });
+        if (!page.cards.length && value.entries.length) return null;
+        return node('column', { id: `pr-commit-group-${value.key}` }, [header, ...page.cards, ...page.controls]);
+      };
+      const page = budgetPage(model, 'discussion', entries, render, [description, ...footer, ...aside, ...extra, column([])],
+        ['pr-discussion-prev', 'pr-discussion-next'], [t('Previous activity', '上段动态'), t('Next activity', '下段动态')]);
+      return hasDetailAside(model)
+        ? [description, node('column', { id: 'pr-conversation' }, page.cards), ...page.controls, ...footer]
+        : [node('column', { id: 'pr-conversation' }, [description, ...page.cards]), ...page.controls, ...footer];
     }
     function nativeCommentComposer(model) {
       const children = commentActions(model).filter(value => value.type !== 'divider');
@@ -1030,22 +1174,28 @@
     }
     function nativeCommits(model) {
       const list = items(model, 'commits');
-      const cards = list.slice(0, 80).map((commit, index) => {
+      const render = (commit, index) => {
         const message = String(commit.commit?.message || ''), lines = message.split('\n');
-        if (supportsNativeTimeline) return node('timelineItem', { id: `pr-commit-${index}`, value: 'comment' }, [
+        if (supportsNativeTimeline) return node('timelineItem', { id: `pr-commit-${stableKey(commit.sha || String(index))}`, value: 'comment' }, [
           authorButton(model, commit, prURL(model) + '/commits'), row([text(date(commit)), node('spacer'), open(model, short(commit.sha, 8), commit.html_url, '/commits', { symbol: undefined })]),
           column([open(model, boundedText(lines[0] || t('Commit', '提交'), 512, '…'), commit.html_url, '/commits', { tone: 'neutral', symbol: undefined }),
-            ...(lines.slice(1).join('\n').trim() ? [markdown(lines.slice(1).join('\n').trim(), 2048)] : [])]),
+            ...(lines.slice(1).join('\n').trim() ? bodyPage(model, `commit-message:${commit.sha}`, lines.slice(1).join('\n').trim()) : [])]),
         ]);
         return node('column', { id: `pr-commit-${index}`, appearance: 'plain' }, [
           open(model, boundedText(lines[0] || t('Commit', '提交'), 512, '…'), commit.html_url, '/commits', { tone: 'neutral' }),
           row([authorButton(model, commit, prURL(model) + '/commits'), text(date(commit)), node('spacer'), open(model, short(commit.sha, 8), commit.html_url, '/commits')]),
           ...(lines.length > 1 && lines.slice(1).join('\n').trim() ? [markdown(lines.slice(1).join('\n').trim(), 2048)] : []),
         ]);
-      });
+      };
       const header = !list.length && section(model, 'commits').loaded && !section(model, 'commits').error
         ? [text(t('No commits returned.', '暂无提交记录。'))] : [];
-      return fit(model, header, cards, sectionState(model, 'commits', t('Commits', '提交')), '/commits');
+      const footer = sectionState(model, 'commits', t('Commits', '提交'));
+      if (!supportsNativeTimeline) return fit(model, header, list.slice(0, 80).map(render), footer, '/commits');
+      const values = list.map(commit => ({ source: 'commits', entry: commit }));
+      const extra = model.mergeExpanded || model.merge?.pending ? [column(mergeActions(model))] : [];
+      const page = budgetPage(model, 'commits', values, (value, index) => render(value.entry, index), [...header, ...footer, ...extra],
+        ['pr-commit-page-prev', 'pr-commit-page-next'], [t('Previous commits', '上段提交'), t('Next commits', '下段提交')]);
+      return [...header, ...page.cards, ...page.controls, ...footer];
     }
     function workflow(model, runs = headItems(model, 'workflows')) {
       const priority = new Set(['in_progress', 'failure', 'error', 'timed_out', 'action_required', 'pending', 'waiting', 'queued', 'requested']);
@@ -1183,7 +1333,7 @@
       if (model.mergeExpanded || model.merge?.pending) body.unshift(node('column', { id: 'pr-merge-options', appearance: 'secondary' }, mergeActions(model)));
       return body;
     }
-    return { summary, content, actions, tabs, nativeContent, nativeDescription, nativeAside, nativeToolbarActions, toggleCommitGroup, workflow, supportsNativeLayout };
+    return { summary, content, actions, tabs, nativeContent, nativeDescription, nativeAside, nativeToolbarActions, toggleCommitGroup, navigateDiscussion, navigateCommits, navigateBody, navigateCommitGroup, workflow, supportsNativeLayout };
   }
   const panelID = 'com.nora.github.panel';
   const clientID = 'Iv23liPZy7EARoSnYoYy';
@@ -1212,6 +1362,7 @@
   };
   const state = { user: null, avatarBase64: null, avatarAccount: '', avatarURL: '', repos: [], repo: '', repoQuery: '', items: [], kind: 'issues', query: '', author: '', label: '', page: 1, repoPage: 1, moreItems: false, moreRepos: false, selected: null, detailsVisible: false, detailLoading: false, detailError: '', device: null, error: '', itemLoadError: '', itemRetryAppend: false, restored: false, showToken: false, showOtherRepository: false, manualRepository: '', itemsLoading: false, reposLoading: false };
   const avatars = new Map();
+  let issueBodyPages = {};
   let participantButtons = new WeakMap();
   let visibleParticipants = new Map();
   let visibleParticipantPage = '';
@@ -1421,11 +1572,13 @@
   function clearDetails() {
     ++detailRevision;
     pullDetails.reset();
+    issueBodyPages = {};
     state.selected = null; state.detailsVisible = false; state.detailLoading = false; state.detailError = '';
   }
   async function loadDetail(item, { preserveTab = false } = {}) {
     const revision = ++detailRevision, current = generation;
     const requestedKey = itemKey(item), requestedKind = state.kind, requestedRepo = state.repo;
+    if (requestedKind === 'issues' && (!preserveTab || !state.selected || itemKey(state.selected) !== requestedKey)) issueBodyPages = {};
     state.selected = item; state.detailsVisible = true; state.detailLoading = true; state.detailError = '';
     const isCurrent = () => current === generation && revision === detailRevision && state.kind === requestedKind &&
       state.repo === requestedRepo && state.selected && itemKey(state.selected) === requestedKey && state.detailsVisible;
@@ -1948,7 +2101,7 @@
   function detailView() {
     const item = state.selected, status = itemStatus(item), date = itemDate(item);
     if (pullView.supportsNativeLayout && (state.kind === 'issues' || pullDetails.current)) {
-      const isPR = state.kind === 'pulls', model = isPR ? pullDetails.current : { item, repo: itemRepository(item), number: item.number };
+      const isPR = state.kind === 'pulls', model = isPR ? pullDetails.current : { item, repo: itemRepository(item), number: item.number, nativeBodyPages: issueBodyPages };
       const toolbar = node('toolbar', {}, [node('spacer'),
         button(t('Hand to Nora', '交给 Nora'), 'handoff-item', state.detailLoading || !!state.detailError, { appearance: 'primary', symbol: 'sparkles' }),
         ...(isPR && !state.detailLoading && !state.detailError ? pullView.nativeToolbarActions(model) : []),
@@ -2200,6 +2353,22 @@
             record.checksDetailVisible = false;
             if (!record.jobsByRun[run.id]) await pullDetails.jobs(run.id);
           }
+        }
+      }
+      else if (action === 'pr-discussion-load') await pullDetails.moreDiscussion();
+      else if (['pr-discussion-prev', 'pr-discussion-next'].includes(action) && pullDetails.current) {
+        pullView.navigateDiscussion(pullDetails.current, action.endsWith('-prev') ? 'prev' : 'next');
+      }
+      else if (['pr-commit-page-prev', 'pr-commit-page-next'].includes(action) && pullDetails.current) {
+        pullView.navigateCommits(pullDetails.current, action.endsWith('-prev') ? 'prev' : 'next');
+      }
+      else if ((action?.startsWith('pr-body:') || action?.startsWith('pr-group-page:')) && state.selected && state.detailsVisible && !state.detailLoading && !state.detailError) {
+        const separator = action.lastIndexOf(':'), direction = action.slice(separator + 1);
+        if (direction === 'prev' || direction === 'next') {
+          const body = action.startsWith('pr-body:'), key = action.slice(body ? 8 : 14, separator);
+          const model = state.kind === 'issues' ? { nativeBodyPages: issueBodyPages } : pullDetails.current;
+          if (body && model) pullView.navigateBody(model, key, direction);
+          else if (pullDetails.current) pullView.navigateCommitGroup(pullDetails.current, key, direction);
         }
       }
       else if (action?.startsWith('pr-more:')) await pullDetails.more(action.slice(8));

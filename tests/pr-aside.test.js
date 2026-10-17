@@ -208,19 +208,41 @@ test('Issues use the same original comment card and absent or unknown associatio
   }
 });
 
-test('A partial history remains reachable and the combined discussion and context column stay in the content budget', () => {
+test('Every loaded discussion page stays reachable inside Nora with its context and draft inside both budgets', () => {
   const current = model(), api = view();
   current.item.assignees = Array.from({ length: 12 }, (_, index) => account(`assignee${index}`));
   current.item.labels = Array.from({ length: 16 }, (_, index) => ({ name: `label${index}-` + 'long name '.repeat(30) }));
   current.item.milestone = { title: 'A real milestone', html_url: 'https://github.com/owner/repo/milestone/1' };
-  current.sections.comments = section(Array.from({ length: 80 }, (_, index) => ({ id: index, user: account(`author${index}`), body: `Original comment ${index}`, created_at: `2026-10-15T00:${String(index).padStart(2, '0')}:00Z` })), { nextPage: 2 });
-  const combined = [...api.nativeContent(current), ...api.nativeAside(current)];
-  const nodes = flatten(combined);
-  assert.ok(nodes.length <= 200, `Combined content has ${nodes.length} nodes`);
-  assert.ok(nodes.some(node => node.text === 'View complete history' && node.action.startsWith('pr-open:')));
-  assert.ok(nodes.some(node => node.action === 'pr-more:comments'));
-  assert.ok(nodes.some(node => node.type === 'markdown' && node.text === 'Original comment 79'));
-  assert.ok(nodes.some(node => node.action === 'pr-comment'));
+  current.sections.comments = section(Array.from({ length: 80 }, (_, index) => ({ id: index, user: account(`author${index}`), body: `Original comment ${index}`, created_at: new Date(Date.UTC(2026, 9, 15, 0, index)).toISOString() })), { nextPage: 2 });
+  const visited = new Set();
+  const readPage = () => {
+    const combined = [...api.nativeContent(current), ...api.nativeAside(current)];
+    const nodes = flatten(combined);
+    assert.ok(nodes.length <= 200, `Combined content has ${nodes.length} nodes`);
+    assert.ok(Buffer.byteLength(JSON.stringify(combined, (key, value) => key === 'avatarBase64' ? undefined : value)) <= 185 * 1024);
+    assert.ok(!nodes.some(node => node.text === 'View complete history'));
+    assert.ok(nodes.some(node => node.action === 'pr-discussion-load'));
+    assert.ok(nodes.some(node => node.action === 'pr-comment'));
+    assert.ok(nodes.some(node => node.type === 'textEditor' && node.value === 'An unfinished reply.'));
+    for (const node of nodes) {
+      const match = node.type === 'markdown' && /^Original comment (\d+)$/.exec(node.text || '');
+      if (match) visited.add(Number(match[1]));
+    }
+    return nodes;
+  };
+  let nodes = readPage(), steps = 0;
+  assert.ok(nodes.some(node => /^pr-discussion-(?:prev|next)$/.test(node.action || '')));
+  while (nodes.some(node => node.action === 'pr-discussion-prev' && !node.disabled)) {
+    assert.ok(++steps <= 80, 'Earlier discussion pages must terminate');
+    assert.ok(api.navigateDiscussion(current, 'prev'));
+    nodes = readPage();
+  }
+  while (nodes.some(node => node.action === 'pr-discussion-next' && !node.disabled)) {
+    assert.ok(++steps <= 160, 'Later discussion pages must terminate');
+    assert.ok(api.navigateDiscussion(current, 'next'));
+    nodes = readPage();
+  }
+  assert.deepEqual([...visited].sort((left, right) => left - right), Array.from({ length: 80 }, (_, index) => index));
 });
 
 test('The optional context column is restricted to the discussion and keeps legacy hosts on their existing structure', () => {

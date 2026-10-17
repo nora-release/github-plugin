@@ -155,25 +155,43 @@ test('Pagination preserves an expanded overlapping run while unrelated groups st
   assert.ok(groups(api.nativeContent(current)).every(value => value.children.length === 1));
 });
 
-test('Expanded huge collections retain a collapse header, explicit remaining count, history entry and comment composer within both budgets', () => {
+test('Expanded huge collections page every commit inside Nora with a collapse header and preserved draft within both budgets', () => {
   const api = view({ supportsDetailAside: false }), current = model(Array.from({ length: 200 }, (_, index) => commit(index + 1, {
     message: '😀'.repeat(160), author: { login: '😀'.repeat(80), date: moment(1) + 'x'.repeat(4096) },
+    dismissed_review: { dismissal_message: 'Original extended event context. '.repeat(600) },
   })));
   current.item.body = 'A long original description. '.repeat(4000);
   current.sections.timeline.nextPage = 2;
   const group = groups(api.nativeContent(current))[0]; assert.equal(group.children[0].text, '200 commits');
   api.toggleCommitGroup(current, groupKey(group));
-  const content = api.nativeContent(current), expanded = groups(content)[0], all = flatten(content);
+  let content = api.nativeContent(current), expanded = groups(content)[0], all = flatten(content);
   assert.ok(expanded); assert.equal(expanded.children[0].action, group.children[0].action);
-  assert.ok(all.some(value => /^Showing \d+ of 200 loaded commits\.$/.test(value.text || '')));
-  assert.ok(all.some(value => value.action === 'pr-tab:commits' && value.text === 'View all commits'));
-  assert.ok(all.some(value => value.action === 'pr-more:timeline'));
-  assert.ok(all.some(value => value.type === 'textEditor' && value.value === 'Retained draft.'));
-  assert.ok(all.length <= 200, `${all.length} nodes`);
   const withoutImages = (key, value) => key === 'avatarBase64' ? undefined : value;
-  const bytes = Buffer.byteLength(JSON.stringify(content, withoutImages));
-  assert.ok(bytes <= 185 * 1024, `${bytes} bytes`);
-  assert.ok(bytes > 160 * 1024 && all.length < 190, 'Long accepted metadata must exercise the byte budget before the node limit');
+  const visited = new Set(), key = groupKey(group);
+  let pages = 0, largestPage = 0;
+  while (true) {
+    assert.ok(++pages <= 200, 'Commit collection pages must terminate');
+    assert.equal(expanded.children[0].action, group.children[0].action);
+    assert.ok(all.some(value => /^\d+–\d+ \/ 200$/.test(value.text || '')));
+    assert.ok(all.some(value => value.action === 'pr-discussion-load'));
+    assert.ok(all.some(value => value.type === 'textEditor' && value.value === 'Retained draft.'));
+    assert.ok(!all.some(value => value.text === 'View complete history' || value.text === 'View all commits'));
+    assert.ok(all.length <= 200, `${all.length} nodes`);
+    const bytes = Buffer.byteLength(JSON.stringify(content, withoutImages));
+    assert.ok(bytes <= 185 * 1024, `${bytes} bytes`);
+    largestPage = Math.max(largestPage, bytes);
+    for (const entry of expanded.children.filter(value => value.type === 'timelineItem')) {
+      const commitLink = nodes(entry).find(value => value.action?.startsWith('pr-open:') && decodeURIComponent(value.action).includes('/commit/'));
+      assert.ok(commitLink, 'Every rendered commit retains its real SHA link');
+      visited.add(decodeURIComponent(commitLink.action).split('/').at(-1));
+      assert.ok(entry.children[0].avatarBase64, 'Every commit retains the original author avatar');
+    }
+    if (!all.some(value => value.action === `pr-group-page:${key}:next` && !value.disabled)) break;
+    assert.ok(api.navigateCommitGroup(current, key, 'next'));
+    content = api.nativeContent(current); expanded = groups(content)[0]; all = flatten(content);
+  }
+  assert.deepEqual([...visited].sort(), Array.from({ length: 200 }, (_, index) => sha(index + 1)).sort());
+  assert.ok(largestPage > 160 * 1024 && all.length < 190, `Long accepted event content must exercise the byte budget before the node limit (${largestPage} bytes)`);
   assert.ok(api.toggleCommitGroup(current, groupKey(expanded)));
   assert.equal(groups(api.nativeContent(current))[0].children.length, 1);
 });
@@ -240,14 +258,15 @@ test('Actual SDK toggle, avatar render, paginated grouping and delayed same-head
   await new Promise(resolve => setImmediate(resolve)); page = await f.render({});
   assert.equal(groups([page])[0].children.length, 3);
   assert.ok(nodes(page).some(value => value.text === 'author1' && value.avatarBase64 === image));
-  assert.ok(nodes(page).some(value => value.action === 'pr-more:timeline'));
-  page = await f.render({ action: 'pr-more:timeline' }); group = groups([page])[0];
+  assert.ok(nodes(page).some(value => value.action === 'pr-discussion-load'));
+  page = await f.render({ action: 'pr-discussion-load' }); group = groups([page])[0];
   assert.equal(group.children[0].text, '3 commits'); assert.equal(group.children.length, 4);
-  assert.ok(!nodes(page).some(value => value.action === 'pr-more:timeline'));
+  assert.ok(!nodes(page).some(value => value.action === 'pr-discussion-load'));
   delay = { started: deferred(), release: deferred() };
   const refresh = f.render({ action: 'pr-refresh' }); await delay.started.promise;
   const loading = await f.render({});
-  assert.ok(nodes(loading).some(value => value.type === 'progress' || value.id?.startsWith('pr-commit-group-')));
+  assert.ok(nodes(loading).some(value => value.type === 'progress' || value.id?.startsWith('pr-commit-group-')
+    || value.action === 'pr-discussion-load' && value.disabled && value.text === 'Loading activity…'));
   delay.release.resolve(); await refresh; delay = null;
   page = await f.render({}); group = groups([page])[0];
   assert.equal(group.children[0].text, '2 commits'); assert.equal(group.children.length, 3, 'Same-head refresh keeps expansion while the timeline is incomplete');

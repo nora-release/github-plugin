@@ -581,7 +581,7 @@ test('Starting another login cannot skip a disconnect already queued behind an o
   assert.equal(f.stored(), null);
 });
 
-test('Oversized Unicode descriptions stay within native view limits and retain the full GitHub link', async () => {
+test('Oversized Unicode Issue descriptions remain fully readable inside Nora within native view limits', async () => {
   const description = '你好🧑🏽‍💻'.repeat(20_000);
   const f = fixture({ saved: connection, locale: 'zh-Hans', route: async url => {
     if (url.pathname === '/user') return body({ login: 'alice' });
@@ -589,13 +589,22 @@ test('Oversized Unicode descriptions stay within native view limits and retain t
     return itemResponse(url, [issue(1, 'Large description', { body: description })]);
   } });
   await f.renderReady({});
-  const detail = await f.render({ action: 'item:item-alice/project/1' });
-  const descriptionNode = nodes(detail).find(node => node.text?.includes('描述过长已截断'));
-  assert.ok(descriptionNode);
-  assert.ok(Buffer.byteLength(descriptionNode.text, 'utf8') <= 64 * 1024);
-  assert.ok(!/[\ud800-\udbff]$/.test(descriptionNode.text));
-  assert.ok(nodes(detail).every(node => !node.text || Buffer.byteLength(node.text, 'utf8') <= 64 * 1024));
-  assert.ok(Buffer.byteLength(JSON.stringify(detail), 'utf8') <= 512 * 1024);
+  let detail = await f.render({ action: 'item:item-alice/project/1' });
+  const pieces = [];
+  for (let page = 0; page < 100; page++) {
+    const card = nodes(detail).find(node => node.id === 'issue-description');
+    const descriptionNode = nodes(card).find(node => node.type === 'markdown');
+    assert.ok(descriptionNode);
+    assert.ok(!/[\ud800-\udbff]$/.test(descriptionNode.text));
+    assert.ok(nodes(detail).every(node => !node.text || Buffer.byteLength(node.text, 'utf8') <= 64 * 1024));
+    assert.ok(Buffer.byteLength(JSON.stringify(detail), 'utf8') <= 512 * 1024);
+    pieces.push(descriptionNode.text);
+    const next = nodes(card).find(node => node.action?.startsWith('pr-body:') && node.action.endsWith(':next') && !node.disabled);
+    if (!next) break;
+    detail = await f.render({ action: next.action });
+  }
+  assert.equal(pieces.join(''), description);
+  assert.deepEqual(f.links, []);
   assert.ok(nodes(detail).some(node => node.action === 'open-item'));
   await f.render({ action: 'open-item' });
   assert.deepEqual(f.links, ['https://github.com/alice/project/issues/1']);
