@@ -287,7 +287,7 @@
     }
     return { get current() { return model; }, reset() { ++revision; model = null; }, open, selectTab, refresh, more, moreDiscussion, jobs, setCommentDraft, postComment, prepareMerge, confirmMerge, cancelMerge, context };
   }
-  function createPullRequestView({ node, t, boundedText, displayedBody, short, itemStatus, itemDate, avatarFor = () => null, onAuthorButton = () => {}, currentUser = () => null, supportsTextEditor = true, supportsNativeLayout = false, supportsNativeDiff = false, supportsNativeTimeline = false, supportsDetailAside = false, supportsItemRowIcon = false, supportsButtonIcon = false, supportsTabBarSummary = false, now = () => Date.now() }) {
+  function createPullRequestView({ node, t, boundedText, displayedBody, short, itemStatus, itemDate, avatarFor = () => null, onAuthorButton = () => {}, currentUser = () => null, supportsTextEditor = true, supportsNativeLayout = false, supportsNativeDiff = false, supportsNativeTimeline = false, supportsDetailAside = false, supportsItemRowIcon = false, supportsButtonIcon = false, supportsTabBarSummary = false, supportsContinuousContent = false, now = () => Date.now() }) {
     const commitGroupIconSVG = '<svg xmlns="http://www.w3.org/2000/svg" width="32" height="32" viewBox="0 0 24 24"><g fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5"><circle cx="12" cy="12" r="3"/><path d="M9 12H3m12 0h6"/></g></svg>';
     const tabIconSVGs = {
       discussion: '<svg xmlns="http://www.w3.org/2000/svg" width="32" height="32" viewBox="0 0 24 24"><g fill="none" stroke="currentColor" stroke-linejoin="round" stroke-width="1.5"><path stroke-linecap="round" d="M7.5 12h6m-6-4h3m-2 12c1.05.87 2.315 1.424 3.764 1.519c1.141.075 2.333.075 3.473 0a4 4 0 0 0 1.188-.268c.41-.167.614-.25.719-.237c.104.012.255.122.557.342c.533.388 1.204.666 2.2.643c.503-.012.755-.019.867-.208c.113-.19-.027-.452-.308-.977c-.39-.728-.636-1.561-.262-2.229c.643-.954 1.19-2.083 1.27-3.303c.043-.655.043-1.334 0-1.99A6.7 6.7 0 0 0 21.4 11"/><path d="M12.345 17.487c3.556-.234 6.388-3.08 6.62-6.653c.046-.699.046-1.423 0-2.122c-.232-3.572-3.064-6.418-6.62-6.652c-1.213-.08-2.48-.08-3.69 0c-3.556.234-6.388 3.08-6.62 6.652c-.046.7-.046 1.423 0 2.122c.084 1.302.665 2.506 1.349 3.524c.397.712.135 1.6-.279 2.377c-.298.56-.447.84-.327 1.042s.387.209.922.221c1.057.026 1.77-.271 2.336-.685c.321-.234.482-.351.593-.365c.11-.013.328.075.763.253c.392.16.846.258 1.263.286c1.21.08 2.477.08 3.69 0Z"/></g></svg>',
@@ -411,6 +411,7 @@
       return prefix + parts[index] + suffix;
     }
     function bodyPage(model, identity, value, render = value => [node('markdown', { text: value })]) {
+      if (supportsContinuousContent) return [node('document', { id: `pr-document-${stableKey(identity)}`, text: String(value || '') })];
       const maximum = bytes(JSON.stringify(model.comment?.draft || '')) > 96 * 1024 ? 4 * 1024 : 12 * 1024;
       const key = stableKey(identity), parts = bodyParts(value, maximum), pages = bodyPaging(model);
       const current = pages[key] || { index: 0 };
@@ -492,9 +493,20 @@
       const more = sources.some(([name]) => section(model, name).nextPage || section(model, name).error || !section(model, name).loaded);
       const result = errors.map(([name, label]) => text(`${label}: ${short(section(model, name).error, 400)}`, 'caption', 'warning'));
       result.push(...sources.filter(([name]) => section(model, name).notice).map(([name, label]) => text(`${label}: ${short(section(model, name).notice, 400)}`)));
+      if (supportsContinuousContent) {
+        if (pending) result.push(node('progress', { text: t('Loading activity…', '正在加载动态…') }));
+        else if (errors.length) result.push(button(t('Retry activity', '重试加载动态'), 'pr-discussion-load', { symbol: 'arrow.clockwise' }));
+        return result;
+      }
       if (more || pending) result.push(button(pending ? t('Loading activity…', '正在加载动态…') : errors.length ? t('Retry activity', '重试加载动态') : t('Load more activity', '加载更多动态'),
         'pr-discussion-load', { symbol: 'arrow.down.circle', disabled: pending }));
       return result;
+    }
+    function continuation(model, names, action) {
+      const sources = names.map(name => section(model, name));
+      if (sources.some(source => source.loading || source.error) || !sources.some(source => source.nextPage || !source.loaded)) return {};
+      const state = names.map((name, index) => [name, sources[index].items.length, sources[index].nextPage, sources[index].loaded]);
+      return { loadMoreAction: action, loadMoreToken: stableKey(JSON.stringify([model.key || `${model.repo}/${model.number}`, model.generation, state])) };
     }
     const fit = (model, header, cards, footer, suffix, preferRecent = false, reservedNodes = 0) => {
       const overflow = [badge(t('More activity is available on GitHub.', '还有更多内容，可在 GitHub 查看。'), 'muted'), open(model, t('View complete history', '查看完整内容'), prURL(model) + suffix, suffix)];
@@ -1145,11 +1157,15 @@
         if (!value.entries) return activityRow(value, `pr-activity-${stableKey(activityKey(value))}`);
         const expanded = model.expandedCommitGroups.has(value.key);
         const lastDate = relativeDate(value.entries.at(-1).entry);
+        const groupID = supportsContinuousContent ? stableKey(activityKey(value)) : value.key;
         const header = nativeRow(t(`${value.entries.length} commits`, `${value.entries.length} 次提交`), '', {
-          id: `pr-commit-group-header-${value.key}`, action: `pr-commits:${value.key}`, symbol: 'circle.and.line.horizontal', appearance: 'secondary', tone: 'muted',
+          id: `pr-commit-group-header-${groupID}`, action: `pr-commits:${value.key}`, symbol: 'circle.and.line.horizontal', appearance: 'secondary', tone: 'muted',
           ...(supportsItemRowIcon ? { iconSVG: commitGroupIconSVG } : {}),
         }, lastDate ? [text(lastDate)] : []);
-        if (!expanded) return node('column', { id: `pr-commit-group-${value.key}` }, [header]);
+        if (!expanded) return node('column', { id: `pr-commit-group-${groupID}` }, [header]);
+        if (supportsContinuousContent) return node('lazyColumn', { id: `pr-commit-group-${groupID}` }, [header,
+          ...value.entries.map(entry => activityRow(entry, `pr-group-commit-${stableKey(activityKey(entry))}`)),
+        ]);
         const page = budgetPage(model, `group-${value.key}`, value.entries,
           entry => activityRow(entry, `pr-group-commit-${value.key}-${stableKey(activityKey(entry))}`), [header, column([])],
           [`pr-group-page:${value.key}:prev`, `pr-group-page:${value.key}:next`], [t('Previous commits', '上段提交'), t('Next commits', '下段提交')],
@@ -1157,6 +1173,9 @@
         if (!page.cards.length && value.entries.length) return null;
         return node('column', { id: `pr-commit-group-${value.key}` }, [header, ...page.cards, ...page.controls]);
       };
+      if (supportsContinuousContent) return [description, node('lazyColumn', { id: 'pr-conversation',
+        ...continuation(model, sources.map(([name]) => name), 'pr-discussion-load'),
+      }, entries.map(render)), ...footer];
       const page = budgetPage(model, 'discussion', entries, render, [description, ...footer, ...aside, ...extra, column([])],
         ['pr-discussion-prev', 'pr-discussion-next'], [t('Previous activity', '上段动态'), t('Next activity', '下段动态')]);
       return hasDetailAside(model)
@@ -1189,6 +1208,13 @@
       };
       const header = !list.length && section(model, 'commits').loaded && !section(model, 'commits').error
         ? [text(t('No commits returned.', '暂无提交记录。'))] : [];
+      if (supportsContinuousContent) {
+        const state = section(model, 'commits'), footer = [];
+        if (state.loading) footer.push(node('progress', { text: t('Loading commits…', '正在加载提交…') }));
+        if (state.error) footer.push(text(`${t('Commits', '提交')}: ${short(state.error, 400)}`, 'caption', 'warning'),
+          button(t('Retry commits', '重试加载提交'), 'pr-more:commits', { symbol: 'arrow.clockwise', disabled: state.loading }));
+        return [...header, node('lazyColumn', { id: 'pr-commits', ...continuation(model, ['commits'], 'pr-more:commits') }, list.map(render)), ...footer];
+      }
       const footer = sectionState(model, 'commits', t('Commits', '提交'));
       if (!supportsNativeTimeline) return fit(model, header, list.slice(0, 80).map(render), footer, '/commits');
       const values = list.map(commit => ({ source: 'commits', entry: commit }));
@@ -2159,8 +2185,9 @@
   }
   function collectParticipants(main) {
     const images = [];
-    let unlinkedCommit = false;
+    let unlinkedCommit = false, continuousContent = false;
     const visit = entry => {
+      if (entry.type === 'lazyColumn' || entry.type === 'document') continuousContent = true;
       const participant = participantButtons.get(entry);
       if (participant?.source) visibleParticipants.set(avatarKey(participant.source), participant.source);
       if (participant?.unlinkedCommit) unlinkedCommit = true;
@@ -2168,7 +2195,7 @@
       for (const child of [...(entry.children || []), ...(entry.items || [])]) visit(child);
     };
     visit(main);
-    return { images, unlinkedCommit };
+    return { images, unlinkedCommit, continuousContent };
   }
   async function loadParticipantCommits() {
     const model = pullDetails.current, current = generation, user = state.user;
@@ -2207,24 +2234,29 @@
     const properties = { id: 'github-workspace', action: 'close-detail', value: state.selected && state.detailsVisible ? itemKey(state.selected) : '' };
     let avatarCount = visibleItems.length;
     let sidebar = itemSidebar(visibleItems, items.length, avatarCount);
+    const maximumViewBytes = participants.continuousContent ? 14 * 1024 * 1024 : 400 * 1024;
+    const maximumViewNodes = participants.continuousContent ? 30000 : 950;
+    let currentBytes = encodedViewSize({ type: 'workspace', ...properties, children: [sidebar, main] });
     for (const image of participants.images.slice().reverse()) {
-      if (encodedViewSize({ type: 'workspace', ...properties, children: [sidebar, main] }) <= 400 * 1024) break;
+      if (currentBytes <= maximumViewBytes) break;
+      const previous = utf8Size(JSON.stringify({ avatarBase64: image.avatarBase64, symbol: image.symbol }).replace(/\//g, '\\/'));
       delete image.avatarBase64;
       image.symbol = 'person.crop.circle';
+      currentBytes -= previous - utf8Size(JSON.stringify({ symbol: image.symbol }));
     }
-    if (avatarCount > 0 && encodedViewSize({ type: 'workspace', ...properties, children: [sidebar, main] }) > 400 * 1024) {
+    if (avatarCount > 0 && currentBytes > maximumViewBytes) {
       let minimum = 0, maximum = avatarCount;
       while (minimum < maximum) {
         const candidate = Math.ceil((minimum + maximum) / 2);
         const candidateSidebar = itemSidebar(visibleItems, items.length, candidate);
-        if (encodedViewSize({ type: 'workspace', ...properties, children: [candidateSidebar, main] }) <= 400 * 1024) minimum = candidate;
+        if (encodedViewSize({ type: 'workspace', ...properties, children: [candidateSidebar, main] }) <= maximumViewBytes) minimum = candidate;
         else maximum = candidate - 1;
       }
       avatarCount = minimum;
       sidebar = itemSidebar(visibleItems, items.length, avatarCount);
     }
-    while (visibleItems.length > 1 && (encodedViewSize({ type: 'workspace', ...properties, children: [sidebar, main] }) > 400 * 1024
-      || viewNodeCount({ children: [sidebar, main] }) > 950)) {
+    while (visibleItems.length > 1 && (encodedViewSize({ type: 'workspace', ...properties, children: [sidebar, main] }) > maximumViewBytes
+      || viewNodeCount({ children: [sidebar, main] }) > maximumViewNodes)) {
       visibleItems = visibleItems.slice(0, Math.max(1, visibleItems.length - 20));
       if (state.selected && state.detailsVisible && items.some(item => itemKey(item) === itemKey(state.selected)) &&
           !visibleItems.some(item => itemKey(item) === itemKey(state.selected))) {
@@ -2262,6 +2294,7 @@
     supportsItemRowIcon: nora.features?.itemRowIcon === true,
     supportsButtonIcon: nora.features?.buttonIcon === true,
     supportsTabBarSummary: nora.features?.tabBarSummary === true,
+    supportsContinuousContent: nora.features?.continuousContent === true && typeof nora.ui.lazyColumn === 'function' && typeof nora.ui.document === 'function',
     supportsNativeTimeline: typeof nora.ui.timelineItem === 'function',
     supportsTextEditor: typeof nora.ui.textEditor === 'function', supportsNativeDiff: typeof nora.ui.diff === 'function',
     supportsNativeLayout: ['detail', 'tabBar', 'splitView', 'itemRow'].every(kind => typeof nora.ui[kind] === 'function') });

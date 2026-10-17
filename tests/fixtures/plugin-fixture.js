@@ -12,7 +12,7 @@ const repo = (name = 'alice/project', id = 1) => ({ id, full_name: name, private
 const issue = (number, title, extra = {}) => ({ id: number, number, title, body: 'Description', state: 'open', user: { login: 'alice' }, html_url: `https://github.com/alice/project/issues/${number}`, repository_url: 'https://api.github.com/repos/alice/project', ...extra });
 const nodes = view => [view, ...(view.children || []).flatMap(nodes), ...(view.items || []).flatMap(nodes)];
 const texts = view => nodes(view).flatMap(node => [node.text, node.subtitle].filter(Boolean)).join('\n');
-function fixture({ saved = null, locale = 'en', unavailableViewKinds = [], supportsPanelInvalidation = true, supportsDetailAside = false, supportsItemRowIcon = false, supportsPurpleTone = false, supportsButtonIcon = false, supportsTabBarSummary = false, now = () => Date.now(), beforeRead = async () => {}, beforeSave = async () => {}, onInvalidate = () => true, ownerAvatarRoute = null, route = async url => {
+function fixture({ saved = null, locale = 'en', unavailableViewKinds = [], supportsPanelInvalidation = true, supportsDetailAside = false, supportsItemRowIcon = false, supportsPurpleTone = false, supportsButtonIcon = false, supportsTabBarSummary = false, supportsContinuousContent = false, now = () => Date.now(), beforeRead = async () => {}, beforeSave = async () => {}, onInvalidate = () => true, ownerAvatarRoute = null, route = async url => {
   if (url.pathname === '/user') return body({ login: 'alice' });
   if (url.pathname === '/user/repos') return body([repo()]);
   if (url.pathname === '/search/issues') {
@@ -41,7 +41,7 @@ function fixture({ saved = null, locale = 'en', unavailableViewKinds = [], suppo
 } } = {}) {
   let stored = saved;
   const actionCapabilities = new Set();
-  const requests = [], writes = [], links = [], drafts = [], invalidations = [];
+  const requests = [], writes = [], links = [], drafts = [], invalidations = [], transfers = [];
   let invalidationWaiters = [];
   const request = async (method, args) => {
     if (method === 'credentials.get') { await beforeRead(); return stored; }
@@ -73,20 +73,36 @@ function fixture({ saved = null, locale = 'en', unavailableViewKinds = [], suppo
     throw new Error(`Unexpected method: ${method}`);
   };
   class ClockDate extends Date { static now() { return now(); } }
-  const context = vm.createContext({ request, locale, Date: ClockDate, unavailableViewKinds, supportsDetailAside, supportsItemRowIcon, supportsPurpleTone, supportsButtonIcon, supportsTabBarSummary });
+  const context = vm.createContext({ request, locale, Date: ClockDate, unavailableViewKinds, supportsDetailAside, supportsItemRowIcon, supportsPurpleTone, supportsButtonIcon, supportsTabBarSummary, supportsContinuousContent });
   const hostSDK = sdk.replace('Object.fromEntries(kinds.map(type =>', 'Object.fromEntries(kinds.filter(type => !unavailableViewKinds.includes(type)).map(type =>')
     .replace('panels: Object.freeze(', supportsPanelInvalidation ? 'panels: Object.freeze(' : 'unavailablePanels: Object.freeze(')
     .replace('detailAside: true', 'detailAside: supportsDetailAside')
     .replace('itemRowIcon: true', 'itemRowIcon: supportsItemRowIcon')
     .replace('purpleTone: true', 'purpleTone: supportsPurpleTone')
     .replace('buttonIcon: true', 'buttonIcon: supportsButtonIcon')
-    .replace('tabBarSummary: true', 'tabBarSummary: supportsTabBarSummary');
+    .replace('tabBarSummary: true', 'tabBarSummary: supportsTabBarSummary')
+    .replace('continuousContent: true', 'continuousContent: supportsContinuousContent');
   vm.runInContext(`${hostSDK}\nglobalThis.api = createNoraPluginAPI(request, locale);\n${plugin}`, context);
+  const hydrate = async result => {
+    const descriptor = result.noraViewDocument;
+    if (!descriptor) return result;
+    const pieces = [];
+    for (let index = 0; index < descriptor.chunkCount; index++) {
+      const reply = await context.api.invokePanel('com.nora.github.panel', { contentTransfer: { token: descriptor.token, index } });
+      const chunk = reply.noraViewChunk;
+      if (!chunk || chunk.token !== descriptor.token || chunk.index !== index || typeof chunk.text !== 'string') throw new Error('Invalid native content transfer.');
+      pieces.push(chunk.text);
+    }
+    const document = pieces.join('');
+    if (Buffer.byteLength(document) !== descriptor.byteCount) throw new Error('Native content transfer was incomplete.');
+    transfers.push({ chunkCount: descriptor.chunkCount, byteCount: descriptor.byteCount });
+    return JSON.parse(document);
+  };
   const render = async (event = {}) => {
     const actionCapability = typeof event.action === 'string' && event.action.trim() ? randomUUID() : undefined;
     if (actionCapability) actionCapabilities.add(actionCapability);
     try {
-      return await context.api.invokePanel('com.nora.github.panel', { ...event, actionCapability });
+      return await hydrate(await context.api.invokePanel('com.nora.github.panel', { ...event, actionCapability }));
     } finally {
       if (actionCapability) actionCapabilities.delete(actionCapability);
     }
@@ -107,7 +123,7 @@ function fixture({ saved = null, locale = 'en', unavailableViewKinds = [], suppo
     renderUnscoped: event => context.api.invokePanel('com.nora.github.panel', event),
     requestDraft: (draft, event) => context.nora.chat.openDraft(draft, event),
     command: (id, args = {}) => context.api.invokeCommand(`com.nora.github.${id}`, args),
-    requests, writes, links, drafts, invalidations, stored: () => stored,
+    requests, writes, links, drafts, invalidations, transfers, stored: () => stored,
   };
 }
 const connection = { token: 'test_token' };
