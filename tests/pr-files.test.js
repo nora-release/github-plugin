@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { fixture, body, repo, issue, nodes, texts, connection } from './fixtures/plugin-fixture.js';
+import { fixture, body, searchBody, repo, issue, nodes, texts, connection } from './fixtures/plugin-fixture.js';
 
 const head = 'a'.repeat(40);
 const patch = '@@ -1,2 +1,2 @@\n-const before = 1;\n+const after = 2;\n export { value };';
@@ -13,7 +13,7 @@ function routeFor(files, override = () => undefined) {
     if (response !== undefined) return response;
     if (url.pathname === '/user') return body({ login: 'alice' });
     if (url.pathname === '/user/repos') return body([repo()]);
-    if (url.pathname === '/issues') return body([pull()]);
+    if (url.pathname === '/search/issues') return searchBody([pull()]);
     if (/\/pulls\/\d+$/.test(url.pathname)) return body(pull(Number(url.pathname.split('/').at(-1))));
     if (url.pathname === '/repos/alice/project') return body({ ...repo(), permissions: { push: true } });
     if (url.pathname.endsWith('/check-runs')) return body({ check_runs: [] });
@@ -105,9 +105,9 @@ test('A full PR feed and 200 long file names keep both selected tails and the or
   const files = Array.from({ length: 200 }, (_, index) => file(`src/${longPath}/${index}.ts`, { patch: index === 199 ? selectedPatch : patch, additions: 1, deletions: index === 199 ? 0 : 1 }));
   const feed = Array.from({ length: 400 }, (_, index) => pull(index + 1, { body: '', title: `PR ${index + 1} / ${'Repository activity / '.repeat(11)}` }));
   const f = fixture({ saved: connection, route: routeFor([], url => {
-    if (url.pathname === '/issues') {
+    if (url.pathname === '/search/issues') {
       const page = Number(url.searchParams.get('page'));
-      return body(feed.slice((page - 1) * 50, page * 50), 200, page < 8 ? { link: `<https://api.github.com/issues?page=${page + 1}>; rel="next"` } : {});
+      return searchBody(feed.slice((page - 1) * 50, page * 50), 200, page < 8 ? { link: `<https://api.github.com/search/issues?page=${page + 1}>; rel="next"` } : {});
     }
     if (!url.pathname.endsWith('/files')) return undefined;
     const page = Number(url.searchParams.get('page'));

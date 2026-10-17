@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { fixture, body, repo, issue, nodes, connection } from './fixtures/plugin-fixture.js';
+import { fixture, body, searchBody, repo, issue, nodes, connection } from './fixtures/plugin-fixture.js';
 
 const image = 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=';
 const user = (login, id) => ({ login, html_url: `https://github.com/${login}`, avatar_url: `https://avatars.githubusercontent.com/u/${id}?v=4` });
@@ -22,7 +22,7 @@ function currentHost(options = {}) {
     route: async url => {
       if (url.pathname === '/user') return body({ login: 'viewer' });
       if (url.pathname === '/user/repos') return body([repo('team/project')]);
-      if (url.pathname === '/issues') return body([pull]);
+      if (url.pathname === '/search/issues') return searchBody([pull]);
       if (url.pathname === '/repos/team/project/pulls/1') return body(pull);
       if (url.pathname === '/repos/team/project') return body({ ...repo('team/project'), permissions: { push: false } });
       if (url.pathname.endsWith('/check-runs')) return body({ check_runs: [] });

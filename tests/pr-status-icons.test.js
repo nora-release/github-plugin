@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { fixture, body, issue, nodes, connection } from './fixtures/plugin-fixture.js';
+import { fixture, body, searchBody, issue, nodes, connection } from './fixtures/plugin-fixture.js';
 
 const expectedIcons = {
   open: '<svg xmlns="http://www.w3.org/2000/svg" width="32" height="32" viewBox="0 0 24 24"><!-- Icon from Huge Icons by Hugeicons - undefined --><g fill="none" stroke="currentColor" stroke-width="1.5"><path stroke-linecap="round" stroke-linejoin="round" d="M6 8v8m12 0v-4c0-2.828 0-4.243-.879-5.121C16.243 6 14.828 6 12 6h-1m0 0c0-.7 1.994-2.008 2.5-2.5M11 6c0 .7 1.994 2.008 2.5 2.5"/><circle cx="6" cy="18" r="2"/><circle cx="6" cy="6" r="2"/><circle cx="18" cy="18" r="2"/></g></svg>',
@@ -36,7 +36,7 @@ for (const [kind, extra, label, tone, symbol] of [
 ]) {
   test(`A ${kind} PR uses the exact provided SVG in its sidebar and detail badge`, async () => {
     const item = pull(7, extra);
-    const f = fixture({ saved: connection, route: async url => basics(url) || body(url.pathname === '/issues' ? [item] : item) });
+    const f = fixture({ saved: connection, route: async url => basics(url) || (url.pathname === '/search/issues' ? searchBody([item]) : body(item)) });
     await f.renderReady({});
     const overview = await f.render({ action: 'kind:pulls' });
     const selected = await f.render({ action: 'item:item-alice/project/7' });
@@ -55,7 +55,7 @@ for (const [kind, extra, label, tone, symbol] of [
 test('Merged PRs use the exact provided SVG in the sidebar and heading ahead of closed or draft states', async () => {
   for (const extra of [{ merged: true }, { merged_at: '2026-10-14' }, { pull_request: { merged_at: '2026-10-14' } }]) {
     const item = pull(7, { state: 'closed', draft: true, ...extra });
-    const f = fixture({ saved: connection, route: async url => basics(url) || body(url.pathname === '/issues' ? [item] : item) });
+    const f = fixture({ saved: connection, route: async url => basics(url) || (url.pathname === '/search/issues' ? searchBody([item]) : body(item)) });
     await f.renderReady({});
     const overview = await f.render({ action: 'kind:pulls' });
     const selected = await f.render({ action: 'item:item-alice/project/7' });
@@ -81,7 +81,7 @@ test('Merged status remains in the heading and legacy readiness views without a 
     const f = fixture({ saved: connection, supportsDetailAside, supportsItemRowIcon, supportsPurpleTone,
       unavailableViewKinds: supportsTimeline ? [] : ['timelineItem'], route: async url => {
         const basic = basics(url); if (basic) return basic;
-        if (url.pathname === '/issues') return body([item]);
+        if (url.pathname === '/search/issues') return searchBody([item]);
         if (url.pathname === '/repos/alice/project/pulls/7') return body(item);
         if (url.pathname === '/repos/alice/project') return body({ permissions: { push: false } });
         if (url.pathname.endsWith('/check-runs')) return body({ check_runs: [] });
@@ -119,7 +119,7 @@ test('Merged status remains in the heading and legacy readiness views without a 
 test('Issue badges retain their semantic circles without any PR SVG', async () => {
   for (const [state, symbol, tone] of [['open', 'circle.circle', 'success'], ['closed', 'checkmark.circle', 'accent']]) {
     const item = issue(7, 'Issue 7', { state });
-    const f = fixture({ saved: connection, route: async url => basics(url) || body(url.pathname === '/issues' ? [item] : item) });
+    const f = fixture({ saved: connection, route: async url => basics(url) || (url.pathname === '/search/issues' ? searchBody([item]) : body(item)) });
     const overview = await f.renderReady({});
     const selected = await f.render({ action: 'item:item-alice/project/7' });
     assertHeading(selected, item, 'Issue', state === 'open' ? 'Open' : 'Closed');
@@ -135,7 +135,7 @@ test('Issue badges retain their semantic circles without any PR SVG', async () =
 test('A full draft PR detail updates the sidebar from the open SVG to the draft SVG', async () => {
   const item = pull(7);
   const f = fixture({ saved: connection, route: async url => basics(url) ||
-    body(url.pathname === '/issues' ? [item] : { ...item, draft: true }) });
+    (url.pathname === '/search/issues' ? searchBody([item]) : body({ ...item, draft: true })) });
   await f.renderReady({});
   const overview = await f.render({ action: 'kind:pulls' });
   assert.equal(overview.children[0].items[0].children[0].iconSVG, expectedIcons.open);
@@ -148,7 +148,7 @@ test('A full draft PR detail updates the sidebar from the open SVG to the draft 
 test('Long Unicode PR and Issue titles stay bounded while their status and number remain separate', async () => {
   for (const kind of ['issues', 'pulls']) {
     const item = issue(987654, '修复 🧑🏽‍💻 editor selection '.repeat(800), kind === 'pulls' ? { pull_request: {} } : {});
-    const f = fixture({ saved: connection, route: async url => basics(url) || body(url.pathname === '/issues' ? [item] : item) });
+    const f = fixture({ saved: connection, route: async url => basics(url) || (url.pathname === '/search/issues' ? searchBody([item]) : body(item)) });
     await f.renderReady({});
     if (kind === 'pulls') await f.render({ action: 'kind:pulls' });
     const selected = await f.render({ action: 'item:item-alice/project/987654' });
@@ -170,7 +170,7 @@ test('Hosts without native detail support retain the previous standalone title a
   for (const kind of ['issues', 'pulls']) {
     const item = issue(42, 'Keep the original compatible layout', kind === 'pulls' ? { pull_request: {}, draft: true } : {});
     const f = fixture({ saved: connection, unavailableViewKinds: ['detail'],
-      route: async url => basics(url) || body(url.pathname === '/issues' ? [item] : item) });
+      route: async url => basics(url) || (url.pathname === '/search/issues' ? searchBody([item]) : body(item)) });
     await f.renderReady({});
     if (kind === 'pulls') await f.render({ action: 'kind:pulls' });
     const selected = await f.render({ action: 'item:item-alice/project/42' }), detail = selected.children[1];
@@ -184,10 +184,10 @@ test('Hosts without native detail support retain the previous standalone title a
 });
 
 test('Paginated PR SVG badges stay inside Swift encoded view and node limits', async () => {
-  const f = fixture({ saved: connection, route: async url => basics(url) || body(Array.from({ length: 50 }, (_, index) => {
+  const f = fixture({ saved: connection, route: async url => basics(url) || searchBody(Array.from({ length: 50 }, (_, index) => {
     const number = (Number(url.searchParams.get('page')) - 1) * 50 + index + 1;
     return pull(number, number % 3 === 0 ? { draft: true } : number % 3 === 1 ? {} : { state: 'closed' });
-  }), 200, { link: '<https://api.github.com/issues?page=2>; rel="next"' }) });
+  }), 200, { link: '<https://api.github.com/search/issues?page=2>; rel="next"' }) });
   await f.renderReady({});
   let view = await f.render({ action: 'kind:pulls' });
   for (let page = 2; page <= 8; page++) view = await f.render({ action: 'more-items' });

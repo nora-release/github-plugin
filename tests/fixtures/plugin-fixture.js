@@ -7,6 +7,7 @@ const sdkPath = process.env.NORA_PLUGIN_KIT_PATH
   : new URL('../../node_modules/@nora/plugin-kit/Sources/NoraPluginKit/Resources/script-api.js', import.meta.url);
 const sdk = (await fs.readFile(sdkPath, 'utf8')).replace('export default function', 'function');
 const body = (data, status = 200, headers = {}) => ({ status, headers, bodyText: JSON.stringify(data) });
+const searchBody = (items, status = 200, headers = {}, extra = {}) => body({ items, total_count: items.length, incomplete_results: false, ...extra }, status, headers);
 const repo = (name = 'alice/project', id = 1) => ({ id, full_name: name, private: true });
 const issue = (number, title, extra = {}) => ({ id: number, number, title, body: 'Description', state: 'open', user: { login: 'alice' }, html_url: `https://github.com/alice/project/issues/${number}`, repository_url: 'https://api.github.com/repos/alice/project', ...extra });
 const nodes = view => [view, ...(view.children || []).flatMap(nodes), ...(view.items || []).flatMap(nodes)];
@@ -14,6 +15,20 @@ const texts = view => nodes(view).flatMap(node => [node.text, node.subtitle].fil
 function fixture({ saved = null, locale = 'en', unavailableViewKinds = [], supportsPanelInvalidation = true, supportsDetailAside = false, supportsItemRowIcon = false, supportsPurpleTone = false, supportsButtonIcon = false, supportsTabBarSummary = false, now = () => Date.now(), beforeRead = async () => {}, beforeSave = async () => {}, onInvalidate = () => true, ownerAvatarRoute = null, route = async url => {
   if (url.pathname === '/user') return body({ login: 'alice' });
   if (url.pathname === '/user/repos') return body([repo()]);
+  if (url.pathname === '/search/issues') {
+    const query = url.searchParams.get('q') || '';
+    const repository = /(?:^| )repo:([^ ]+)/.exec(query)?.[1] || 'alice/project';
+    const isPull = query.includes('is:pull-request');
+    const candidates = [issue(1, 'Issue one', {
+      repository_url: `https://api.github.com/repos/${repository}`,
+      html_url: `https://github.com/${repository}/issues/1`,
+    }), issue(1, 'Pull request one', {
+      repository_url: `https://api.github.com/repos/${repository}`,
+      html_url: `https://github.com/${repository}/pull/1`, pull_request: {},
+    })];
+    const items = candidates.filter(value => Boolean(value.pull_request) === isPull);
+    return searchBody(items);
+  }
   const scoped = /^\/repos\/([^/]+\/[^/]+)\/(issues|pulls)(?:\/([1-9][0-9]*))?$/.exec(url.pathname);
   if (scoped) {
     const item = issue(scoped[3] ? Number(scoped[3]) : 1, 'Issue one', {
@@ -102,4 +117,4 @@ function deferred() {
   const promise = new Promise((yes, no) => { resolve = yes; reject = no; });
   return { promise, resolve, reject };
 }
-export { fixture, body, repo, issue, nodes, texts, connection, deferred };
+export { fixture, body, searchBody, repo, issue, nodes, texts, connection, deferred };

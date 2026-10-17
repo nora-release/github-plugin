@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { fixture, body, repo, issue, nodes, texts, connection, deferred } from './fixtures/plugin-fixture.js';
+import { fixture, body, searchBody, repo, issue, nodes, texts, connection, deferred } from './fixtures/plugin-fixture.js';
 
 const image = 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=';
 const avatar = (bodyBase64 = image, contentType = 'image/png') => ({ status: 200, headers: { 'Content-Type': contentType }, bodyBase64 });
@@ -9,7 +9,7 @@ const feedItem = (name, number, extra = {}) => issue(number, `Work item ${number
   html_url: `https://github.com/${name}/issues/${number}`, ...extra,
 });
 const basics = url => url.pathname === '/user' ? body({ login: 'alice' }) : url.pathname === '/user/repos' ? body([]) : null;
-const next = { link: '<https://api.github.com/issues?page=2>; rel="next"' };
+const next = { link: '<https://api.github.com/search/issues?page=2>; rel="next"' };
 const apiRequests = f => f.requests.filter(request => new URL(request.url).hostname === 'api.github.com');
 const renderWithAvatars = async (f, event = {}) => {
   await f.renderReady(event);
@@ -29,7 +29,7 @@ test('Sidebar rows show the repository owner avatar and separate work state rath
   }, route: async url => {
     if (url.pathname === '/user') return body({ login: 'alice' });
     if (url.pathname === '/user/repos') return body([{ ...repo('team/project'), owner: { login: 'team', avatar_url: 'https://avatars.githubusercontent.com/u/100?v=4&s=512' } }]);
-    return body([feedItem('team/project', 17, { user: { login: 'someone-else', avatar_url: 'https://avatars.githubusercontent.com/u/999' },
+    return searchBody([feedItem('team/project', 17, { user: { login: 'someone-else', avatar_url: 'https://avatars.githubusercontent.com/u/999' },
       repository: { full_name: 'team/project', owner: { login: 'team', avatar_url: 'https://avatars.githubusercontent.com/u/200' } } })]);
   } });
   const view = await renderWithAvatars(f);
@@ -48,7 +48,7 @@ test('Repository owner metadata from the feed is usable before repository list p
   const f = fixture({ saved: connection, ownerAvatarRoute: async url => {
     assert.equal(url.pathname, '/u/55');
     return avatar();
-  }, route: async url => basics(url) || body([feedItem('organization/project', 1, {
+  }, route: async url => basics(url) || searchBody([feedItem('organization/project', 1, {
     repository: { full_name: 'organization/project', owner: { login: 'organization', avatar_url: 'https://avatars.githubusercontent.com/u/55' } },
   })]) });
   assert.equal((await renderWithAvatars(f)).children[0].items[0].avatarBase64, image);
@@ -61,7 +61,7 @@ test('Missing or unsafe owner URLs use only the validated public owner fallback 
     const f = fixture({ saved: connection, ownerAvatarRoute: async url => {
       assert.equal(url.href, 'https://avatars.githubusercontent.com/team?s=64');
       return avatar();
-    }, route: async url => basics(url) || body([feedItem('team/project', 1, {
+    }, route: async url => basics(url) || searchBody([feedItem('team/project', 1, {
       repository: { full_name: 'team/project', owner: { login: 'team', avatar_url: source } },
       user: { login: 'author', avatar_url: 'https://evil.test/author' },
     })]) });
@@ -71,7 +71,7 @@ test('Missing or unsafe owner URLs use only the validated public owner fallback 
 });
 
 test('Repeated owners use one public download across filtering, refresh and Issues PR switches', async () => {
-  const f = fixture({ saved: connection, ownerAvatarRoute: async () => avatar(), route: async url => basics(url) || body([
+  const f = fixture({ saved: connection, ownerAvatarRoute: async () => avatar(), route: async url => basics(url) || searchBody([
     feedItem('team/first', 1), feedItem('team/second', 2), feedItem('team/third', 3, { pull_request: {} }),
   ]) });
   for (const event of [{}, { action: 'query', value: 'team' }, { action: 'refresh' }, { action: 'kind:pulls' }, { action: 'kind:issues' }]) {
@@ -82,7 +82,7 @@ test('Repeated owners use one public download across filtering, refresh and Issu
 
 test('Malformed oversized and unavailable owner images stay cached until an explicit refresh', async () => {
   for (const result of [{ status: 404 }, avatar('bad base64'), avatar(image, 'text/html'), avatar(Buffer.alloc(8 * 1024 + 1).toString('base64'))]) {
-    const f = fixture({ saved: connection, ownerAvatarRoute: async () => result, route: async url => basics(url) || body([feedItem('team/project', 1)]) });
+    const f = fixture({ saved: connection, ownerAvatarRoute: async () => result, route: async url => basics(url) || searchBody([feedItem('team/project', 1)]) });
     for (const event of [{}, { action: 'refresh' }]) {
       const view = await renderWithAvatars(f, event);
       assert.equal(view.children[0].items.length, 1);
@@ -103,7 +103,7 @@ test('Owner downloads run at most four together and deferred old account images 
     const newer = args.headers.Authorization === 'Bearer newer_token';
     if (url.pathname === '/user') return body({ login: newer ? 'bob' : 'alice' });
     if (url.pathname === '/user/repos') return body([]);
-    return body(newer ? [] : Array.from({ length: 8 }, (_, index) => feedItem(`team-${index}/project`, index + 1)));
+    return searchBody(newer ? [] : Array.from({ length: 8 }, (_, index) => feedItem(`team-${index}/project`, index + 1)));
   } });
   const old = f.renderReady({});
   await started.promise;
@@ -127,7 +127,7 @@ test('Overlapping panel filters share the four-request avatar limit', async () =
     active++; maximum = Math.max(maximum, active);
     if (active === 4) started.resolve();
     await release.promise; active--; return avatar();
-  }, route: async url => basics(url) || body(Array.from({ length: 8 }, (_, index) =>
+  }, route: async url => basics(url) || searchBody(Array.from({ length: 8 }, (_, index) =>
     feedItem(`team-${index}/project`, index + 1, { title: index < 4 ? 'First owners' : 'Later owners' }))) });
   const initial = f.renderReady({});
   await started.promise;
@@ -140,7 +140,7 @@ test('Overlapping panel filters share the four-request avatar limit', async () =
 });
 
 test('Items expose bounded scroll pagination metadata without any Load more items buttons', async () => {
-  const f = fixture({ saved: connection, route: async url => basics(url) || body([feedItem('team/project', 1)], 200, next) });
+  const f = fixture({ saved: connection, route: async url => basics(url) || searchBody([feedItem('team/project', 1)], 200, next) });
   const initial = await f.renderReady({});
   const sidebar = initial.children[0];
   assert.equal(sidebar.loadMoreAction, 'more-items');
@@ -152,7 +152,7 @@ test('Items expose bounded scroll pagination metadata without any Load more item
 });
 
 test('Every reload has a fresh scroll token even when returning to the same type, scope and first page', async () => {
-  const f = fixture({ saved: connection, route: async url => basics(url) || body([feedItem('team/project', 1), feedItem('team/project', 2, { pull_request: {} })], 200, next) });
+  const f = fixture({ saved: connection, route: async url => basics(url) || searchBody([feedItem('team/project', 1), feedItem('team/project', 2, { pull_request: {} })], 200, next) });
   const first = (await f.renderReady({})).children[0].loadMoreToken;
   await f.render({ action: 'kind:pulls' });
   const returned = (await f.render({ action: 'kind:issues' })).children[0].loadMoreToken;
@@ -171,8 +171,8 @@ test('Concurrent or stale load-more callbacks never duplicate an in-flight or fi
   const started = deferred(), release = deferred();
   const f = fixture({ saved: connection, route: async url => {
     const basic = basics(url); if (basic) return basic;
-    if (url.searchParams.get('page') === '1') return body([feedItem('team/project', 1)], 200, next);
-    started.resolve(); await release.promise; return body([feedItem('team/project', 2)]);
+    if (url.searchParams.get('page') === '1') return searchBody([feedItem('team/project', 1)], 200, next);
+    started.resolve(); await release.promise; return searchBody([feedItem('team/project', 2)]);
   } });
   await f.renderReady({});
   const loading = f.render({ action: 'more-items' });
@@ -193,8 +193,8 @@ test('A failed next-page retry preserves current rows and continues that page in
   let fails = true;
   const f = fixture({ saved: connection, route: async url => {
     const basic = basics(url); if (basic) return basic;
-    if (url.searchParams.get('page') === '1') return body([feedItem('team/project', 1)], 200, next);
-    return fails ? body({}, 503) : body([feedItem('team/project', 2)]);
+    if (url.searchParams.get('page') === '1') return searchBody([feedItem('team/project', 1)], 200, next);
+    return fails ? body({}, 503) : searchBody([feedItem('team/project', 2)]);
   } });
   await f.renderReady({});
   const failed = await f.render({ action: 'more-items' });
@@ -208,12 +208,12 @@ test('A failed next-page retry preserves current rows and continues that page in
   const recovered = await f.render({ action: 'retry-load' });
   assert.equal(recovered.children[0].items.length, 2);
   assert.doesNotMatch(texts(recovered), /could not be reached/);
-  assert.deepEqual(apiRequests(f).filter(request => new URL(request.url).pathname === '/issues').map(request => new URL(request.url).searchParams.get('page')), ['1', '2', '2']);
+  assert.deepEqual(apiRequests(f).filter(request => new URL(request.url).pathname === '/search/issues').map(request => new URL(request.url).searchParams.get('page')), ['1', '2', '2']);
 });
 
 test('Growing lists retain their earliest row and stop at a stable display limit without dropping the prefix', async () => {
   const f = fixture({ saved: connection, ownerAvatarRoute: async () => avatar(Buffer.alloc(7 * 1024).toString('base64')),
-    route: async url => basics(url) || body(Array.from({ length: 50 }, (_, index) => {
+    route: async url => basics(url) || searchBody(Array.from({ length: 50 }, (_, index) => {
       const number = (Number(url.searchParams.get('page')) - 1) * 50 + index + 1;
       return feedItem('team/project', number);
     }), 200, next) });
@@ -230,7 +230,7 @@ test('Growing lists retain their earliest row and stop at a stable display limit
 });
 
 test('Chinese item state badges use concise open closed merged and draft labels with distinct tones', async () => {
-  const f = fixture({ saved: connection, locale: 'zh-Hans', route: async url => basics(url) || body([
+  const f = fixture({ saved: connection, locale: 'zh-Hans', route: async url => basics(url) || searchBody([
     feedItem('team/project', 1, { pull_request: {} }), feedItem('team/project', 2, { pull_request: {}, state: 'closed' }),
     feedItem('team/project', 3, { pull_request: { merged_at: '2026-10-14' }, state: 'closed' }), feedItem('team/project', 4, { pull_request: {}, draft: true }),
   ]) });
@@ -244,7 +244,7 @@ test('Full PR details update the corresponding sidebar status while preserving i
   const first = feedItem('team/project', 7, { pull_request: {} });
   const second = feedItem('other/project', 7, { pull_request: {} });
   const f = fixture({ saved: connection, route: async url => basics(url) ||
-    (url.pathname === '/issues' ? body([first, second]) : body({ ...second, id: 9000, draft: true, body: 'Complete draft PR' })) });
+    (url.pathname === '/search/issues' ? searchBody([first, second]) : body({ ...second, id: 9000, draft: true, body: 'Complete draft PR' })) });
   await f.renderReady({});
   const initial = await f.render({ action: 'kind:pulls' });
   assert.deepEqual(Array.from(initial.children[0].items, entry => entry.children[0].text), ['Open', 'Open']);
@@ -256,7 +256,7 @@ test('Full PR details update the corresponding sidebar status while preserving i
 });
 
 test('Local loaded-item filters cannot trigger further network pages until cleared', async () => {
-  const f = fixture({ saved: connection, route: async url => basics(url) || body([feedItem('team/project', 1)], 200, next) });
+  const f = fixture({ saved: connection, route: async url => basics(url) || searchBody([feedItem('team/project', 1)], 200, next) });
   await f.renderReady({});
   for (const event of [{ action: 'query', value: 'not loaded' }, { action: 'author', value: 'other' }, { action: 'label', value: 'label' }]) {
     await f.render({ action: 'clear-filters' });
@@ -273,7 +273,7 @@ test('Local loaded-item filters cannot trigger further network pages until clear
 
 test('Canonical slash-heavy inline images stay below Swift encoded view limits without losing loaded rows', async () => {
   const f = fixture({ saved: connection, ownerAvatarRoute: async () => avatar(Buffer.alloc(8 * 1024, 255).toString('base64')),
-    route: async url => basics(url) || body(Array.from({ length: 50 }, (_, index) => {
+    route: async url => basics(url) || searchBody(Array.from({ length: 50 }, (_, index) => {
       const number = (Number(url.searchParams.get('page')) - 1) * 50 + index + 1;
       return feedItem('team/project', number);
     }), 200, next) });

@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { fixture, body, repo, issue, nodes, texts, connection, deferred } from './fixtures/plugin-fixture.js';
+import { fixture, body, searchBody, repo, issue, nodes, texts, connection, deferred } from './fixtures/plugin-fixture.js';
 
 const image = 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=';
 const image2 = 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVQIHWP4z8DwHwAFgAI/ScLbtAAAAABJRU5ErkJggg==';
@@ -19,7 +19,7 @@ function participantFixture({ pulls = [pull()], comments = [], reviews = [], rev
     if (response !== undefined) return response;
     if (url.pathname === '/user') return body({ login: 'viewer' });
     if (url.pathname === '/user/repos') return body([repo('team/project')]);
-    if (url.pathname === '/issues') return body(pulls);
+    if (url.pathname === '/search/issues') return searchBody(pulls);
     const selected = /^\/repos\/team\/project\/(?:issues|pulls)\/(\d+)$/.exec(url.pathname);
     if (selected) return body(pulls.find(value => value.number === Number(selected[1])));
     if (url.pathname === '/repos/team/project') return body({ ...repo('team/project'), permissions: { push: false } });

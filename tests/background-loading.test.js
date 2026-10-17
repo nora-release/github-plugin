@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { fixture, body, issue, nodes, texts, connection, deferred } from './fixtures/plugin-fixture.js';
+import { fixture, body, searchBody, issue, nodes, texts, connection, deferred } from './fixtures/plugin-fixture.js';
 
 const image = 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=';
 const avatar = () => ({ status: 200, headers: { 'content-type': 'image/png' }, bodyBase64: image });
@@ -38,7 +38,7 @@ test('Expired-token renewal and account loading run after the progress response'
     if (url.pathname === '/login/oauth/access_token') { started.resolve(); await release.promise; return body({ access_token: 'new_token', token_type: 'bearer', expires_in: 28800 }); }
     assert.equal(args.headers.Authorization, 'Bearer new_token');
     if (url.pathname === '/user') return body({ login: 'alice' });
-    return body([]);
+    return url.pathname === '/search/issues' ? searchBody([]) : body([]);
   } });
   const rendering = f.render({}).then(value => { returned = true; return value; });
   try {
@@ -83,7 +83,7 @@ test('Readable items and filters return while account and owner avatars remain u
     if (url.hostname === 'avatars.githubusercontent.com') { await accountRelease.promise; return avatar(); }
     if (url.pathname === '/user') return body({ login: 'alice', avatar_url: 'https://avatars.githubusercontent.com/u/1' });
     if (url.pathname === '/user/repos') return body([]);
-    return body([feedItem('alice', 1), ...Array.from({ length: 8 }, (_, index) => feedItem(`team-${index}`, index + 2))]);
+    return searchBody([feedItem('alice', 1), ...Array.from({ length: 8 }, (_, index) => feedItem(`team-${index}`, index + 2))]);
   } });
   try {
     const initial = await f.renderReady({});
@@ -116,7 +116,7 @@ test('Old avatar responses cannot repaint or populate a replacement account', as
       const newer = args.headers.Authorization === 'Bearer newer_token';
       if (url.pathname === '/user') return body(newer ? { login: 'bob' } : { login: 'alice', avatar_url: 'https://avatars.githubusercontent.com/u/1' });
       if (url.pathname === '/user/repos') return body([]);
-      return body(newer ? [] : [feedItem('old-team', 1)]);
+      return searchBody(newer ? [] : [feedItem('old-team', 1)]);
     } });
   try {
     await f.renderReady({}); await accountStarted.promise; await ownerStarted.promise;
@@ -137,7 +137,7 @@ test('Failed background restoration keeps the error and saved credentials until 
   let fails = true;
   const f = fixture({ saved: connection, route: async url => {
     if (url.pathname === '/user') return fails ? body({}, 503) : body({ login: 'alice' });
-    return body([]);
+    return url.pathname === '/search/issues' ? searchBody([]) : body([]);
   } });
   const failed = await f.renderReady({});
   assert.match(texts(failed), /could not be reached/);
@@ -156,7 +156,7 @@ test('Earlier hosts retain synchronous restoration without waiting for optional 
     if (url.hostname === 'avatars.githubusercontent.com') { started.resolve(); await release.promise; return avatar(); }
     if (url.pathname === '/user') return body({ login: 'alice', avatar_url: 'https://avatars.githubusercontent.com/u/1' });
     if (url.pathname === '/user/repos') return body([]);
-    return body([feedItem('alice', 1)]);
+    return searchBody([feedItem('alice', 1)]);
   } });
   try {
     const initial = await f.render({}); await started.promise;
@@ -178,7 +178,7 @@ test('Avatar refreshes merge while a host invalidation is pending and flush the 
   }, ownerAvatarRoute: async () => { await imagesRelease.promise; return avatar(); }, route: async url => {
     if (url.pathname === '/user') return body({ login: 'alice' });
     if (url.pathname === '/user/repos') return body([]);
-    return body(Array.from({ length: 8 }, (_, index) => feedItem(`team-${index}`, index + 1)));
+    return searchBody(Array.from({ length: 8 }, (_, index) => feedItem(`team-${index}`, index + 1)));
   } });
   try {
     await f.renderReady({}); await notifyStarted.promise;
@@ -195,7 +195,7 @@ test('A rejected invalidation cannot turn optional image loading into an account
   const f = fixture({ saved: connection, onInvalidate: async () => { throw new Error('Unsupported notification'); }, ownerAvatarRoute: async () => avatar(), route: async url => {
     if (url.pathname === '/user') return body({ login: 'alice' });
     if (url.pathname === '/user/repos') return body([]);
-    return body([feedItem('team', 1)]);
+    return searchBody([feedItem('team', 1)]);
   } });
   const ready = await f.renderReady({});
   assert.equal(ready.type, 'workspace');
@@ -210,7 +210,7 @@ test('A failed repository request cannot finish restoration before the pending i
   const f = fixture({ saved: connection, route: async url => {
     if (url.pathname === '/user') return body({ login: 'alice' });
     if (url.pathname === '/user/repos') return body({}, 503);
-    started.resolve(); await release.promise; return body([feedItem('team', 1)]);
+    started.resolve(); await release.promise; return searchBody([feedItem('team', 1)]);
   } });
   try {
     assert.equal((await f.render({})).id, 'github-restoring');

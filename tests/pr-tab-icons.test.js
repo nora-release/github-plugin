@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import test from 'node:test';
 import vm from 'node:vm';
-import { fixture, body, repo, issue, nodes, connection } from './fixtures/plugin-fixture.js';
+import { fixture, body, searchBody, repo, issue, nodes, connection } from './fixtures/plugin-fixture.js';
 
 const source = readFileSync(new URL('../plugin.js', import.meta.url), 'utf8');
 const start = source.indexOf('function createPullRequestView('), end = source.indexOf('const panelID', start);
@@ -60,7 +60,7 @@ function host(capability) {
   return fixture({ saved: connection, supportsDetailAside: true, ...(capability === undefined ? {} : { supportsButtonIcon: capability }), route: async url => {
     if (url.pathname === '/user') return body({ login: 'viewer' });
     if (url.pathname === '/user/repos') return body([repo('team/project')]);
-    if (url.pathname === '/issues') return body([pull]);
+    if (url.pathname === '/search/issues') return searchBody([pull]);
     if (url.pathname === '/repos/team/project/pulls/1') return body(pull);
     if (url.pathname === '/repos/team/project') return body({ ...repo('team/project'), permissions: { push: false } });
     if (url.pathname.endsWith('/check-runs')) return body({ check_runs: [] });

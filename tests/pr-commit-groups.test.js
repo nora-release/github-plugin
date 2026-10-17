@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import test from 'node:test';
 import vm from 'node:vm';
-import { fixture, body, repo, issue, nodes, connection, deferred } from './fixtures/plugin-fixture.js';
+import { fixture, body, searchBody, repo, issue, nodes, connection, deferred } from './fixtures/plugin-fixture.js';
 
 const source = readFileSync(new URL('../plugin.js', import.meta.url), 'utf8');
 const start = source.indexOf('function createPullRequestView('), end = source.indexOf('const panelID', start);
@@ -218,7 +218,7 @@ test('Actual SDK toggle, avatar render, paginated grouping and delayed same-head
     ownerAvatarRoute: async () => ({ status: 200, headers: { 'content-type': 'image/png' }, bodyBase64: image }), route: async url => {
       if (url.pathname === '/user') return body({ login: 'viewer' });
       if (url.pathname === '/user/repos') return body([repo('team/project')]);
-      if (url.pathname === '/issues') return body([pull(1, head), pull(2, head)]);
+      if (url.pathname === '/search/issues') return searchBody([pull(1, head), pull(2, head)]);
       const selected = /^\/repos\/team\/project\/pulls\/([12])$/.exec(url.pathname);
       if (selected) return body(pull(Number(selected[1]), head));
       if (url.pathname === '/repos/team/project') return body({ ...repo('team/project'), permissions: { push: false } });

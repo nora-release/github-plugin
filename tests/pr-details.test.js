@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
 import vm from 'node:vm';
 import test from 'node:test';
-import { deferred, issue, repo, fixture, body, nodes, texts, connection } from './fixtures/plugin-fixture.js';
+import { deferred, issue, repo, fixture, body, searchBody, nodes, texts, connection } from './fixtures/plugin-fixture.js';
 
 const plugin = await fs.readFile(new URL('../plugin.js', import.meta.url), 'utf8');
 // Exercise the shipped controller in isolation without network, UI, or GitHub mutations.
@@ -411,7 +411,7 @@ function fixtureRoute({ mutation = async () => assert.fail('Unexpected mutation'
     if (args.method && args.method !== 'GET') return mutation(url, args);
     if (url.pathname === '/user') return body({ login: 'alice' });
     if (url.pathname === '/user/repos') return body([repository()]);
-    if (url.pathname === '/issues') return body([pull()]);
+    if (url.pathname === '/search/issues') return searchBody([pull()]);
     if (url.pathname === '/repos/alice/project/pulls/1') return body(detail());
     const response = defaultRead(url.pathname + url.search);
     return body(response.data, 200, response.headers);
@@ -463,10 +463,10 @@ test('A full PR feed with large discussion and typed draft stays within native w
     assert.ok(!args.method || args.method === 'GET', 'Rendering a typed draft must not write to GitHub');
     if (url.pathname === '/user') return body({ login: 'alice' });
     if (url.pathname === '/user/repos') return body([repository()]);
-    if (url.pathname === '/issues') {
+    if (url.pathname === '/search/issues') {
       const page = Number(url.searchParams.get('page'));
-      const headers = page < 8 ? { link: `<https://api.github.com/issues?page=${page + 1}>; rel="next"` } : {};
-      return body(feed.slice((page - 1) * 50, page * 50), 200, headers);
+      const headers = page < 8 ? { link: `<https://api.github.com/search/issues?page=${page + 1}>; rel="next"` } : {};
+      return searchBody(feed.slice((page - 1) * 50, page * 50), 200, headers);
     }
     if (url.pathname === '/repos/alice/project/pulls/400') return body({ ...feed.at(-1), body: description });
     if (url.pathname === '/repos/alice/project/issues/400/comments') return body(comments);
@@ -576,7 +576,7 @@ test('A late automatic workflow load cannot replace the selected workflow of a d
   let first = true;
   const f = fixture({ saved: connection, route: async (url, args) => {
     assert.ok(!args.method || args.method === 'GET');
-    if (url.pathname === '/issues') return body([pull(1), pull(2)]);
+    if (url.pathname === '/search/issues') return searchBody([pull(1), pull(2)]);
     if (/\/pulls\/[12]$/.test(url.pathname)) return body(pull(Number(url.pathname.split('/').at(-1))));
     if (url.pathname.endsWith('/actions/runs')) return body({ workflow_runs: [
       { id: 83, name: 'CI', head_sha: head, status: 'in_progress' },

@@ -1403,15 +1403,20 @@
     return { items: kind === 'issues' ? result.data.filter(item => !item.pull_request) : result.data, nextPage: hasNext(result.headers) ? p + 1 : null };
   }
   async function panelItems(repo, kind, filter, p) {
-    if (repo) {
-      const result = await listItems({ repository: repo, state: filter, page: p }, kind);
-      return { ...result, items: result.items.map(item => normalizeItem(item, repo)) };
-    }
-    const result = await api(`/issues?filter=all&state=${filter}&sort=updated&direction=desc&per_page=50&page=${p}`);
-    if (!Array.isArray(result.data)) throw new Error(message.invalid);
-    const items = result.data.map(item => normalizeItem(item));
+    const login = state.user?.login;
+    if (typeof login !== 'string' || !/^[A-Za-z0-9][A-Za-z0-9_-]{0,99}$/.test(login)) throw new Error(message.invalid);
+    const query = [kind === 'pulls' ? 'is:pull-request' : 'is:issue',
+      ...(filter === 'all' ? [] : [`state:${status(filter)}`]), ...(repo ? [`repo:${repository(repo)}`] : []),
+      kind === 'pulls' ? `(involves:${login} OR review-involves:${login})` : `involves:${login}`].join(' ');
+    // OR between qualifiers requires GitHub's advanced search mode.
+    const result = await api(`/search/issues?q=${encodeURIComponent(query)}&sort=updated&order=desc&per_page=50&page=${page(p)}&advanced_search=true`);
+    const data = result.data;
+    if (!data || Array.isArray(data) || !Array.isArray(data.items) || !Number.isSafeInteger(data.total_count) || data.total_count < 0 ||
+        typeof data.incomplete_results !== 'boolean') throw new Error(message.invalid);
+    if (data.incomplete_results) throw new Error(t('GitHub could not finish this search. Try again.', 'GitHub 未能完成此次查询，请重试。'));
+    const items = data.items.map(item => normalizeItem(item, repo));
     return { items: items.filter(item => Boolean(item.pull_request) === (kind === 'pulls')),
-      nextPage: hasNext(result.headers) ? p + 1 : null };
+      nextPage: hasNext(result.headers) && p < 20 ? p + 1 : null };
   }
   function clearDetails() {
     ++detailRevision;
@@ -1876,7 +1881,7 @@
       .filter(name => typeof name === 'string' && name && name.length <= 200))].slice(-100);
     const names = [...new Set([state.repo, ...recent].filter(Boolean))].slice(0, 100);
     return node('picker', { id: 'repository', text: t('Repository', '仓库'), action: 'repository', value: state.repo,
-      options: [{ value: '', text: t('All repositories', '所有仓库') }, ...names.map(value => ({ value, text: value }))] });
+      options: [{ value: '', text: t('Related to me', '与我相关') }, ...names.map(value => ({ value, text: value }))] });
   }
   function feedToken() {
     let hash = 2166136261;
@@ -1981,7 +1986,7 @@
   }
   function emptyListView() {
     if (state.itemsLoading) return node('emptyState', { text: t('Loading from GitHub…', '正在从 GitHub 加载…'),
-      subtitle: t('Fetching items from your accessible repositories.', '正在获取你可访问仓库中的条目。'), symbol: 'arrow.clockwise' }, [node('progress')]);
+      subtitle: t('Fetching Issues and pull requests you participate in.', '正在获取与你相关的 Issues 和 PR。'), symbol: 'arrow.clockwise' }, [node('progress')]);
     if (state.error || state.itemLoadError) return node('emptyState', { text: t('Couldn’t load this view', '暂时无法加载'), subtitle: state.error || state.itemLoadError, symbol: 'exclamationmark.circle' },
       [button(state.error === message.expired ? t('Reconnect GitHub', '重新连接 GitHub') : t('Try again', '重试'),
         state.error === message.expired ? 'begin-login' : 'retry-load', false, { appearance: 'primary' }), button(message.manage, 'manage')]);
@@ -2026,12 +2031,12 @@
     if (!state.user) return connectionView();
     const items = filteredItems();
     let visibleItems = items.slice(0, maximumSidebarItems);
-    const header = node('toolbar', {}, [styledText(`${state.repo || t('All repositories', '所有仓库')} / ${state.kind === 'pulls' ? t('Pull requests', 'PR') : 'Issues'}`, 'caption', 'neutral'), node('spacer'),
+    const header = node('toolbar', {}, [styledText(`${state.repo || t('Related to me', '与我相关')} / ${state.kind === 'pulls' ? t('Pull requests', 'PR') : 'Issues'}`, 'caption', 'neutral'), node('spacer'),
       button(message.refresh, 'refresh', state.itemsLoading || state.reposLoading, { appearance: 'icon', symbol: 'arrow.clockwise' })]);
     let main;
     if (state.showOtherRepository) {
       main = column([header, node('emptyState', { id: 'other-repository', text: t('Open another repository', '打开其他仓库'),
-        subtitle: t('Enter owner/name. Your connected account must have access.', '输入 owner/name；已连接的账号需要拥有访问权限。'), symbol: 'folder.badge.plus' }, [
+        subtitle: t('Enter owner/name to see the Issues and pull requests you participate in there.', '输入 owner/name，查看该仓库中与你相关的 Issues 和 PR。'), symbol: 'folder.badge.plus' }, [
         ...(state.error ? [node('badge', { text: state.error, tone: 'danger' })] : []),
         node('column', { id: 'github-repository-form', appearance: 'secondary' }, [
           node('textField', { id: 'manual-repo', placeholder: 'owner/name', value: state.manualRepository }),

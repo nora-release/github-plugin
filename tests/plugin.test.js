@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import { randomUUID } from 'node:crypto';
 import fs from 'node:fs/promises';
 import test from 'node:test';
-import { fixture, body, repo, issue, nodes, texts, connection } from './fixtures/plugin-fixture.js';
+import { fixture, body, searchBody, repo, issue, nodes, texts, connection } from './fixtures/plugin-fixture.js';
 const avatarPNG = 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=';
 const avatarJPEG = '/9j/4AAQSkZJRgABAQEASABIAAD/2wBDAP//////////////////////////////////////////////////////////////////////////////////////2wBDAf//////////////////////////////////////////////////////////////////////////////////////wAARCAABAAEDASIAAhEBAxEB/8QAFQABAQAAAAAAAAAAAAAAAAAAAAX/xAAUEAEAAAAAAAAAAAAAAAAAAAAA/9oADAMBAAIQAxAAAAEf/8QAFBABAAAAAAAAAAAAAAAAAAAAAP/aAAgBAQABBQJ//8QAFBEBAAAAAAAAAAAAAAAAAAAAAP/aAAgBAwEBPwF//8QAFBEBAAAAAAAAAAAAAAAAAAAAAP/aAAgBAgEBPwF//8QAFBABAAAAAAAAAAAAAAAAAAAAAP/aAAgBAQAGPwJ//8QAFBABAAAAAAAAAAAAAAAAAAAAAP/aAAgBAQABPyF//9oADAMBAAIAAwAAABAf/8QAFBEBAAAAAAAAAAAAAAAAAAAAAP/aAAgBAwEBPxB//8QAFBEBAAAAAAAAAAAAAAAAAAAAAP/aAAgBAgEBPxB//8QAFBABAAAAAAAAAAAAAAAAAAAAAP/aAAgBAQABPxB//9k=';
 const accountHeader = view => view.children[0].children[0];
@@ -11,11 +11,16 @@ const avatarResponse = (bodyBase64 = avatarPNG, status = 200, contentType = 'ima
   status, headers: { 'content-type': contentType }, bodyBase64,
 });
 function itemResponse(url, items, status = 200, headers = {}) {
+  if (url.pathname === '/search/issues') {
+    const pulls = (url.searchParams.get('q') || '').includes('is:pull-request');
+    return searchBody(items.filter(item => Boolean(item.pull_request) === pulls), status, headers);
+  }
   const number = /^\/repos\/[^/]+\/[^/]+\/(issues|pulls)\/([1-9][0-9]*)$/.exec(url.pathname)?.[2];
   return body(number ? items.find(item => item.number === Number(number)) || {} : items, status, headers);
 }
 function repositoryIssue(url, number, title, extra = {}) {
-  const repository = /^\/repos\/([^/]+\/[^/]+)\//.exec(url.pathname)?.[1] || 'alice/project';
+  const repository = /^\/repos\/([^/]+\/[^/]+)\//.exec(url.pathname)?.[1]
+    || /(?:^| )repo:([^ ]+)/.exec(url.searchParams.get('q') || '')?.[1] || 'alice/project';
   return issue(number, title, { repository_url: `https://api.github.com/repos/${repository}`,
     html_url: `https://github.com/${repository}/issues/${number}`, ...extra });
 }
@@ -278,7 +283,7 @@ test('Repos and Issues are read under the connected user credentials', async () 
   const repository = nodes(view.children[0]).find(node => node.id === 'repository');
   assert.equal(repository.value, '');
   assert.ok(repository.options.some(option => option.value === 'alice/project'));
-  assert.ok(f.requests.some(request => new URL(request.url).pathname === '/issues'));
+  assert.ok(f.requests.some(request => new URL(request.url).pathname === '/search/issues'));
   assert.ok(!f.requests.some(request => new URL(request.url).pathname === '/repos/alice/project/issues'));
 });
 
@@ -306,7 +311,7 @@ test('Invalid PAT never overwrites saved credentials', async () => {
     if (args.headers.Authorization === 'Bearer invalid_token') return body({}, 401);
     if (url.pathname === '/user') return body({ login: 'alice' });
     if (url.pathname === '/user/repos') return body([repo()]);
-    return body([]);
+    return url.pathname === '/search/issues' ? searchBody([]) : body([]);
   } });
   const view = await f.render({ action: 'connect-token', values: { token: 'invalid_token' } });
   assert.match(texts(view), /expired/);
@@ -337,7 +342,7 @@ test('Page loading deduplicates and commands validate untrusted repository input
   const f = fixture({ saved: connection, route: async url => {
     if (url.pathname === '/user') return body({ login: 'alice' });
     if (url.pathname === '/user/repos') return body([repo()]);
-    return url.searchParams.get('page') === '2' ? itemResponse(url, [issue(1, 'Alpha'), issue(2, 'Beta')]) : itemResponse(url, [issue(1, 'Alpha')], 200, { link: '<https://api.github.com/repos/alice/project/issues?page=2>; rel="next"' });
+    return url.searchParams.get('page') === '2' ? itemResponse(url, [issue(1, 'Alpha'), issue(2, 'Beta')]) : itemResponse(url, [issue(1, 'Alpha')], 200, { link: '<https://api.github.com/search/issues?page=2>; rel="next"' });
   } });
   await f.renderReady({});
   const view = await f.render({ action: 'more-items' });
@@ -384,7 +389,7 @@ test('Disconnect during an old repository response never restores that account',
   const f = fixture({ saved: connection, route: async url => {
     if (url.pathname === '/user') return body({ login: 'alice' });
     if (url.pathname === '/user/repos') { started(); await wait; return body([repo()]); }
-    return body([]);
+    return url.pathname === '/search/issues' ? searchBody([]) : body([]);
   } });
   const restore = await f.render({});
   assert.equal(restore.id, 'github-restoring');
@@ -425,7 +430,7 @@ test('A newer account connection wins over an older delayed user response', asyn
       return body({ login: older ? 'alice' : 'bob' });
     }
     if (url.pathname === '/user/repos') return body([repo('bob/project')]);
-    return body([]);
+    return url.pathname === '/search/issues' ? searchBody([]) : body([]);
   } });
   const older = f.render({ action: 'connect-token', values: { token: 'older_token' } });
   await started.promise;
@@ -460,7 +465,7 @@ test('A newer account replaces credentials even when an older save is already pe
     const newer = args.headers.Authorization === 'Bearer newer_token';
     if (url.pathname === '/user') { if (newer) newerStarted.resolve(); return body({ login: newer ? 'bob' : 'alice' }); }
     if (url.pathname === '/user/repos') return body([repo('bob/project')]);
-    return body([]);
+    return url.pathname === '/search/issues' ? searchBody([]) : body([]);
   } });
   const older = f.render({ action: 'connect-token', values: { token: 'older_token' } });
   await started.promise;
@@ -497,7 +502,7 @@ test('A repository switch clears old details immediately and ignores a late olde
   const f = fixture({ saved: connection, route: async url => {
     if (url.pathname === '/user') return body({ login: 'alice' });
     if (url.pathname === '/user/repos') return body([repo('alice/first'), repo('alice/second', 2)]);
-    if (url.pathname.includes('/second/')) { started.resolve(); await release.promise; return itemResponse(url, [repositoryIssue(url, 2, 'Stale second result')]); }
+    if ((url.searchParams.get('q') || '').includes('repo:alice/second')) { started.resolve(); await release.promise; return itemResponse(url, [repositoryIssue(url, 2, 'Stale second result')]); }
     return itemResponse(url, [repositoryIssue(url, 1, 'First result', { body: 'Old selected details' })]);
   } });
   await f.renderReady({});
@@ -519,7 +524,7 @@ test('Manual Finish sign-in observes the interval and persists credentials only 
     }
     if (url.pathname === '/user') return body({ login: 'alice' });
     if (url.pathname === '/user/repos') return body([repo()]);
-    return body([]);
+    return url.pathname === '/search/issues' ? searchBody([]) : body([]);
   } });
   await f.render({ action: 'begin-login' });
   assert.match(texts(await f.render({ action: 'finish-login' })), /few seconds/);
@@ -562,7 +567,7 @@ test('Starting another login cannot skip a disconnect already queued behind an o
   const f = fixture({ beforeSave: async () => { started.resolve(); await release.promise; }, route: async url => {
     if (url.pathname === '/user') return body({ login: 'alice' });
     if (url.pathname === '/login/device/code') return body(device());
-    return body([]);
+    return url.pathname === '/search/issues' ? searchBody([]) : body([]);
   } });
   const oldConnection = f.render({ action: 'connect-token', values: { token: 'test_token' } });
   await started.promise;
@@ -656,7 +661,8 @@ test('Account and repository utilities stay in menus and manual repository entry
   const opened = await f.render({ action: 'open-repo', values: { 'manual-repo': 'bob/other' } });
   assert.match(texts(opened), /bob\/other/);
   assert.ok(!nodes(opened).some(node => node.id === 'manual-repo'));
-  assert.equal(new URL(apiRequests(f).at(-1).url).pathname, '/repos/bob/other/issues');
+  assert.equal(new URL(apiRequests(f).at(-1).url).pathname, '/search/issues');
+  assert.ok(new URL(apiRequests(f).at(-1).url).searchParams.get('q').includes('repo:bob/other'));
 });
 
 test('Search repository and status filters stay with the issue list while account actions remain in its menu', async () => {
@@ -687,7 +693,7 @@ test('Search repository and status filters stay with the issue list while accoun
   assert.equal(f.requests.length, requestCount);
   const switched = await f.render({ action: 'kind:pulls' });
   assert.equal(nodes(switched.children[0]).find(node => node.id === 'view-navigation').value, 'view-pulls');
-  assert.equal(new URL(f.requests.at(-1).url).pathname, '/issues');
+  assert.equal(new URL(f.requests.at(-1).url).pathname, '/search/issues');
   assert.match(texts(switched.children[0]), /Review native changes/);
   assert.equal(f.stored(), connection);
   assert.equal(f.writes.length, 0);
@@ -792,14 +798,14 @@ test('An empty GitHub view has one recovery state and changing API state retriev
   const f = fixture({ saved: connection, route: async url => {
     if (url.pathname === '/user') return body({ login: 'alice' });
     if (url.pathname === '/user/repos') return body([repo()]);
-    return body(url.searchParams.get('state') === 'all' ? [issue(1, 'A closed issue', { state: 'closed' })] : []);
+    return searchBody(!/(?:^| )state:(?:open|closed)(?: |$)/.test(url.searchParams.get('q') || '') ? [issue(1, 'A closed issue', { state: 'closed' })] : []);
   } });
   const empty = await f.renderReady({});
   assert.equal(nodes(empty).filter(node => node.type === 'emptyState').length, 1);
   assert.ok(nodes(empty).some(node => node.action === 'all-states'));
   const all = await f.render({ action: 'all-states' });
   assert.match(texts(all), /A closed issue/);
-  assert.equal(new URL(apiRequests(f).at(-1).url).searchParams.get('state'), 'all');
+  assert.doesNotMatch(new URL(apiRequests(f).at(-1).url).searchParams.get('q'), /(?:^| )state:/);
   const item = nodes(all).find(node => node.id === 'item-alice/project/1');
   assert.equal(item.children[0].symbol, 'checkmark.circle');
   assert.equal(item.children[0].tone, 'accent');
@@ -810,7 +816,7 @@ test('A stale repository failure cannot replace the newest repository or its sel
   const f = fixture({ saved: connection, route: async url => {
     if (url.pathname === '/user') return body({ login: 'alice' });
     if (url.pathname === '/user/repos') return body([repo('alice/first'), repo('alice/second', 2)]);
-    if (url.pathname.includes('/second/')) { started.resolve(); await release.promise; return body({}, 403); }
+    if ((url.searchParams.get('q') || '').includes('repo:alice/second')) { started.resolve(); await release.promise; return body({}, 403); }
     return itemResponse(url, [repositoryIssue(url, 1, 'Current first repository', { body: 'Current details' })]);
   } });
   await f.renderReady({});
@@ -856,8 +862,8 @@ test('The current data error remains recoverable after a local search during its
   const f = fixture({ saved: connection, route: async url => {
     if (url.pathname === '/user') return body({ login: 'alice' });
     if (url.pathname === '/user/repos') return body([repo()]);
-    if (url.searchParams.get('state') === 'closed' && fails) { started.resolve(); await release.promise; return body({}, 403); }
-    return itemResponse(url, [issue(1, 'Recovered issue', { state: url.searchParams.get('state') })]);
+    if ((url.searchParams.get('q') || '').includes('state:closed') && fails) { started.resolve(); await release.promise; return body({}, 403); }
+    return itemResponse(url, [issue(1, 'Recovered issue', { state: (url.searchParams.get('q') || '').includes('state:closed') ? 'closed' : 'open' })]);
   } });
   await f.renderReady({});
   const changing = f.render({ action: 'status', values: { status: 'closed' } });
@@ -882,7 +888,7 @@ test('A transient saved-account error can retry or begin OAuth without a success
     if (url.pathname === '/login/device/code') return body(device());
     if (url.pathname === '/user') return fails ? body({}, 503) : body({ login: 'alice' });
     if (url.pathname === '/user/repos') return body([repo()]);
-    return body([]);
+    return url.pathname === '/search/issues' ? searchBody([]) : body([]);
   } });
   const failed = await f.renderReady({});
   assert.equal(failed.type, 'emptyState');
@@ -901,7 +907,7 @@ test('Paginated rows remain inside native descriptor limits with an explicit loa
     const page = Number(url.searchParams.get('page'));
     return itemResponse(url, Array.from({ length: 50 }, (_, index) => issue((page - 1) * 50 + index + 1, `Issue ${(page - 1) * 50 + index + 1}`,
       { labels: [{ name: 'bug' }, { name: 'triage' }], updated_at: '2026-10-10T00:00:00Z' })), 200,
-      { link: `<https://api.github.com/repos/alice/project/issues?page=${page + 1}>; rel="next"` });
+      { link: `<https://api.github.com/search/issues?page=${page + 1}>; rel="next"` });
   } });
   await f.renderReady({});
   await f.render({ action: 'more-items' });
@@ -939,12 +945,11 @@ test('The sidebar lists account items and repository selection narrows the exist
   const f = fixture({ saved: connection, route: async url => {
     if (url.pathname === '/user') return body({ login: 'alice' });
     if (url.pathname === '/user/repos') return body([repo('alice/first'), repo('team/second', 2)]);
-    const scoped = url.pathname.startsWith('/repos/');
-    const repository = scoped ? url.pathname.split('/').slice(2, 4).join('/') : 'team/second';
+    const repository = /(?:^| )repo:([^ ]+)/.exec(url.searchParams.get('q') || '')?.[1] || 'team/second';
     const extra = { repository_url: `https://api.github.com/repos/${repository}`,
       html_url: `https://github.com/${repository}/pull/7`, pull_request: {} };
     const pullRequest = issue(7, `PR in ${repository}`, extra);
-    if (url.pathname.endsWith('/pulls')) return body([pullRequest]);
+    if ((url.searchParams.get('q') || '').includes('is:pull-request')) return searchBody([pullRequest]);
     return itemResponse(url, [issue(1, 'First issue', { repository_url: `https://api.github.com/repos/${repository}`,
       html_url: `https://github.com/${repository}/issues/1` }), pullRequest]);
   } });
@@ -960,7 +965,8 @@ test('The sidebar lists account items and repository selection narrows the exist
   assert.equal(nodes(switched.children[0]).find(node => node.id === 'view-navigation').value, 'view-pulls');
   assert.deepEqual(Array.from(switched.children[0].items, item => [item.text, item.action]),
     [['PR in team/second', 'item:item-team/second/7']]);
-  assert.equal(new URL(f.requests.at(-1).url).pathname, '/repos/team/second/pulls');
+  assert.equal(new URL(f.requests.at(-1).url).pathname, '/search/issues');
+  assert.ok(new URL(f.requests.at(-1).url).searchParams.get('q').includes('repo:team/second'));
   assert.ok(apiRequests(f).every(request => request.headers.Authorization === 'Bearer test_token'));
 });
 
@@ -1018,7 +1024,8 @@ test('Nora draft context tracks the current repository PR and rejects stale or h
   const f = fixture({ saved: connection, route: async url => {
     if (url.pathname === '/user') return body({ login: 'alice' });
     if (url.pathname === '/user/repos') return body([repo('alice/first'), repo('team/second', 2)]);
-    if (url.pathname === '/issues' || url.pathname.endsWith('/issues')) {
+    if ((url.pathname === '/search/issues' && !(url.searchParams.get('q') || '').includes('is:pull-request'))
+      || /^\/repos\/[^/]+\/[^/]+\/issues\/[1-9][0-9]*$/.test(url.pathname)) {
       return itemResponse(url, [repositoryIssue(url, 7, 'Selected issue')]);
     }
     return itemResponse(url, [issue(7, 'Selected pull request', {
@@ -1069,7 +1076,7 @@ test('Large repository filters and paginated issue lists remain inside native vi
       200, { link: `<https://api.github.com/user/repos?page=${page + 1}>; rel="next"` });
     return itemResponse(url, Array.from({ length: 50 }, (_, index) => repositoryIssue(url, (page - 1) * 50 + index + 1, `Issue ${(page - 1) * 50 + index + 1}`,
       { labels: [{ name: 'bug' }, { name: 'triage' }], updated_at: '2026-10-10T00:00:00Z' })), 200,
-      { link: `<https://api.github.com/issues?page=${page + 1}>; rel="next"` });
+      { link: `<https://api.github.com/search/issues?page=${page + 1}>; rel="next"` });
   } });
   await f.renderReady({});
   for (let page = 2; page <= 4; page += 1) await f.render({ action: 'more-repos' });
@@ -1089,7 +1096,8 @@ test('Large repository filters and paginated issue lists remain inside native vi
   assert.equal(manualFilter.value, 'alice/repo-0');
   assert.ok(manualFilter.options.some(option => option.value === 'alice/repo-0'));
   assert.ok(manual.children[0].items.every(item => item.id.startsWith('item-alice/repo-0/')));
-  assert.equal(new URL(f.requests.at(-1).url).pathname, '/repos/alice/repo-0/issues');
+  assert.equal(new URL(f.requests.at(-1).url).pathname, '/search/issues');
+  assert.ok(new URL(f.requests.at(-1).url).searchParams.get('q').includes('repo:alice/repo-0'));
   assert.ok(nodes(manual).length <= 1000);
   assert.ok(Buffer.byteLength(JSON.stringify(manual), 'utf8') <= 512 * 1024);
   assert.equal(f.stored(), connection);
