@@ -276,7 +276,7 @@
     }
     return { get current() { return model; }, reset() { ++revision; model = null; }, open, selectTab, refresh, more, jobs, setCommentDraft, postComment, prepareMerge, confirmMerge, cancelMerge, context };
   }
-  function createPullRequestView({ node, t, boundedText, displayedBody, short, itemStatus, itemDate, avatarFor = () => null, onAuthorButton = () => {}, currentUser = () => null, supportsTextEditor = true, supportsNativeLayout = false, supportsNativeDiff = false, supportsNativeTimeline = false, supportsDetailAside = false, supportsItemRowIcon = false, supportsButtonIcon = false, now = () => Date.now() }) {
+  function createPullRequestView({ node, t, boundedText, displayedBody, short, itemStatus, itemDate, avatarFor = () => null, onAuthorButton = () => {}, currentUser = () => null, supportsTextEditor = true, supportsNativeLayout = false, supportsNativeDiff = false, supportsNativeTimeline = false, supportsDetailAside = false, supportsItemRowIcon = false, supportsButtonIcon = false, supportsTabBarSummary = false, now = () => Date.now() }) {
     const commitGroupIconSVG = '<svg xmlns="http://www.w3.org/2000/svg" width="32" height="32" viewBox="0 0 24 24"><g fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5"><circle cx="12" cy="12" r="3"/><path d="M9 12H3m12 0h6"/></g></svg>';
     const tabIconSVGs = {
       discussion: '<svg xmlns="http://www.w3.org/2000/svg" width="32" height="32" viewBox="0 0 24 24"><g fill="none" stroke="currentColor" stroke-linejoin="round" stroke-width="1.5"><path stroke-linecap="round" d="M7.5 12h6m-6-4h3m-2 12c1.05.87 2.315 1.424 3.764 1.519c1.141.075 2.333.075 3.473 0a4 4 0 0 0 1.188-.268c.41-.167.614-.25.719-.237c.104.012.255.122.557.342c.533.388 1.204.666 2.2.643c.503-.012.755-.019.867-.208c.113-.19-.027-.452-.308-.977c-.39-.728-.636-1.561-.262-2.229c.643-.954 1.19-2.083 1.27-3.303c.043-.655.043-1.334 0-1.99A6.7 6.7 0 0 0 21.4 11"/><path d="M12.345 17.487c3.556-.234 6.388-3.08 6.62-6.653c.046-.699.046-1.423 0-2.122c-.232-3.572-3.064-6.418-6.62-6.652c-1.213-.08-2.48-.08-3.69 0c-3.556.234-6.388 3.08-6.62 6.652c-.046.7-.046 1.423 0 2.122c.084 1.302.665 2.506 1.349 3.524c.397.712.135 1.6-.279 2.377c-.298.56-.447.84-.327 1.042s.387.209.922.221c1.057.026 1.77-.271 2.336-.685c.321-.234.482-.351.593-.365c.11-.013.328.075.763.253c.392.16.846.258 1.263.286c1.21.08 2.477.08 3.69 0Z"/></g></svg>',
@@ -759,6 +759,15 @@
       return nativeRow(title, '', { ...(action ? { action } : {}), symbol: result.symbol, tone: result.tone, ...properties },
         [...(elapsed ? [text(elapsed, 'monospaced')] : []), ...trailing]);
     };
+    function changeSummary(model) {
+      const item = model.item || {};
+      const known = value => Number.isSafeInteger(value) && value >= 0;
+      const children = [
+        ...(known(item.additions) ? [text(`+${item.additions}`, 'caption', 'success')] : []),
+        ...(known(item.deletions) ? [text(`−${item.deletions}`, 'caption', 'danger')] : []),
+      ];
+      return children.length ? [node('row', { id: 'pr-change-summary' }, children)] : [];
+    }
     function tabs(model) {
       const labels = { discussion: t('Discussion', '讨论'), commits: t('Commits', '提交'), checks: t('Checks', '检查'), files: t('Files', '文件') };
       const symbols = { discussion: 'text.bubble', checks: 'checkmark.circle', commits: 'circle.and.line.horizontal', files: 'doc.on.doc' };
@@ -768,7 +777,8 @@
         return value.loaded && !value.loading && !value.error && !value.nextPage && !value.notice;
       });
       const counts = { discussion: model.item?.comments, checks: checks || checksComplete ? checks : undefined, commits: model.item?.commits, files: model.item?.changed_files };
-      return node('tabBar', { id: 'pr-tabs' }, Object.keys(labels).map(tab => button(labels[tab], `pr-tab:${tab}`, {
+      const summary = supportsTabBarSummary ? changeSummary(model) : [];
+      return node('tabBar', { id: 'pr-tabs', ...(summary.length ? { items: summary } : {}) }, Object.keys(labels).map(tab => button(labels[tab], `pr-tab:${tab}`, {
         id: `pr-tab-${tab}`, symbol: symbols[tab], ...(supportsButtonIcon ? { iconSVG: tabIconSVGs[tab] } : {}), ...(model.tab === tab || tab === 'discussion' && model.tab === 'overview' ? { value: 'selected' } : {}),
         ...(Number.isInteger(counts[tab]) && counts[tab] >= 0 ? { subtitle: String(counts[tab]) } : {}),
       })));
@@ -871,8 +881,8 @@
         contextSection('reviewers', t('Reviewers', '审查人'), reviewRows), node('divider'),
         contextSection('assignees', t('Assignees', '负责人'), assigneeRows), node('divider'),
         contextSection('labels', t('Labels', '标签'), labelRows), node('divider'),
-        contextSection('milestone', t('Milestone', '里程碑'), milestoneRows), node('divider'),
-        contextSection('changes', t('Changes', '变更'), changes),
+        contextSection('milestone', t('Milestone', '里程碑'), milestoneRows),
+        ...(!supportsTabBarSummary ? [node('divider'), contextSection('changes', t('Changes', '变更'), changes)] : []),
       ])];
     }
     function nativeDescription(model, sourceURL = prURL(model), id = 'pr-description') {
@@ -2090,6 +2100,7 @@
     supportsDetailAside: nora.features?.detailAside === true,
     supportsItemRowIcon: nora.features?.itemRowIcon === true,
     supportsButtonIcon: nora.features?.buttonIcon === true,
+    supportsTabBarSummary: nora.features?.tabBarSummary === true,
     supportsNativeTimeline: typeof nora.ui.timelineItem === 'function',
     supportsTextEditor: typeof nora.ui.textEditor === 'function', supportsNativeDiff: typeof nora.ui.diff === 'function',
     supportsNativeLayout: ['detail', 'tabBar', 'splitView', 'itemRow'].every(kind => typeof nora.ui[kind] === 'function') });
