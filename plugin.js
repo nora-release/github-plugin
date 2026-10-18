@@ -661,37 +661,33 @@
       activity.sort((a, b) => a.timestamp.localeCompare(b.timestamp) || String(a.entry.id || '').localeCompare(String(b.entry.id || '')));
       return { sources, activity };
     }
-    const commitGroupKey = (model, first, last) => {
-      const source = `${model.key || `${model.repo}/${model.number}`}|${(first.sha || first.commit_id).toLowerCase()}|${(last.sha || last.commit_id).toLowerCase()}`;
-      let left = 2166136261, right = 2246822507;
-      for (let index = 0; index < source.length; index++) {
-        left = Math.imul(left ^ source.charCodeAt(index), 16777619);
-        right = Math.imul(right ^ source.charCodeAt(index), 3266489917);
-      }
-      return (left >>> 0).toString(16).padStart(8, '0') + (right >>> 0).toString(16).padStart(8, '0');
-    };
+    const commitGroupKey = (model, first, last) => stableKey(JSON.stringify([
+      model.key || `${model.repo}/${model.number}`, activityKey(first), activityKey(last),
+    ]));
+    const isCommitActivity = value => value.source === 'timeline'
+      && ['committed', 'head_ref_force_pushed'].includes(value.entry.event)
+      && /^[a-f\d]{40}$/i.test(value.entry.sha || value.entry.commit_id || '');
     function groupedActivity(model, activity) {
       const result = [], members = new Map();
       const previousExpanded = model.expandedCommitGroups || new Set(), previousMembers = model.commitGroupMembers || new Map();
-      const isCommit = value => value.source === 'timeline' && value.entry.event === 'committed' && /^[a-f\d]{40}$/i.test(value.entry.sha || value.entry.commit_id || '');
-      const loaded = new Set(activity.filter(isCommit).map(value => (value.entry.sha || value.entry.commit_id).toLowerCase()));
+      const loaded = new Set(activity.filter(isCommitActivity).map(activityKey));
       for (let index = 0; index < activity.length;) {
-        if (!isCommit(activity[index])) { result.push(activity[index++]); continue; }
+        if (!isCommitActivity(activity[index])) { result.push(activity[index++]); continue; }
         const entries = [];
-        while (index < activity.length && isCommit(activity[index])) entries.push(activity[index++]);
+        while (index < activity.length && isCommitActivity(activity[index])) entries.push(activity[index++]);
         if (entries.length === 1) { result.push(entries[0]); continue; }
-        const key = commitGroupKey(model, entries[0].entry, entries.at(-1).entry);
-        members.set(key, new Set(entries.map(value => (value.entry.sha || value.entry.commit_id).toLowerCase())));
+        const key = commitGroupKey(model, entries[0], entries.at(-1));
+        members.set(key, new Set(entries.map(activityKey)));
         result.push({ entries, key });
       }
       const currentKeys = new Set(members.keys()), expanded = new Set();
       const timeline = section(model, 'timeline'), complete = timeline.loaded && !timeline.loading && !timeline.error && !timeline.nextPage && !timeline.notice;
       for (const key of previousExpanded) {
         const remembered = previousMembers.get(key) || new Set();
-        const matches = [...currentKeys].filter(current => [...members.get(current)].some(sha => remembered.has(sha)));
+        const matches = [...currentKeys].filter(current => [...members.get(current)].some(identity => remembered.has(identity)));
         if (!matches.length && !complete) { members.set(key, new Set(remembered)); expanded.add(key); continue; }
         for (const current of matches) expanded.add(current);
-        if (!complete && matches.length) for (const sha of remembered) if (!loaded.has(sha)) members.get(matches.at(-1)).add(sha);
+        if (!complete && matches.length) for (const identity of remembered) if (!loaded.has(identity)) members.get(matches.at(-1)).add(identity);
       }
       let count = [...members.values()].reduce((sum, commits) => sum + commits.size, 0);
       for (const [key, commits] of members) {
@@ -704,9 +700,8 @@
         if (pages[`group-${key}`]) continue;
         for (const [previous, commits] of previousMembers) {
           const page = pages[`group-${previous}`];
-          if (!page?.anchor || ![...members.get(key)].some(sha => commits.has(sha))) continue;
-          const anchorSHA = page.anchor.startsWith('timeline:') ? page.anchor.slice('timeline:'.length) : '';
-          if (!members.get(key).has(anchorSHA)) continue;
+          if (!page?.anchor || ![...members.get(key)].some(identity => commits.has(identity))) continue;
+          if (!members.get(key).has(page.anchor)) continue;
           pages[`group-${key}`] = { ...page }; break;
         }
       }
@@ -1158,7 +1153,10 @@
         const expanded = model.expandedCommitGroups.has(value.key);
         const lastDate = relativeDate(value.entries.at(-1).entry);
         const groupID = supportsContinuousContent ? stableKey(activityKey(value)) : value.key;
-        const header = nativeRow(t(`${value.entries.length} commits`, `${value.entries.length} 次提交`), '', {
+        const updates = value.entries.some(value => value.entry.event === 'head_ref_force_pushed');
+        const label = updates ? t(`${value.entries.length} commit updates`, `${value.entries.length} 次提交更新`)
+          : t(`${value.entries.length} commits`, `${value.entries.length} 次提交`);
+        const header = nativeRow(label, '', {
           id: `pr-commit-group-header-${groupID}`, action: `pr-commits:${value.key}`, symbol: 'circle.and.line.horizontal', appearance: 'secondary', tone: 'muted',
           ...(supportsItemRowIcon ? { iconSVG: commitGroupIconSVG } : {}),
         }, lastDate ? [text(lastDate)] : []);
