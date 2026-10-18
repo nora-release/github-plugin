@@ -287,7 +287,7 @@
     }
     return { get current() { return model; }, reset() { ++revision; model = null; }, open, selectTab, refresh, more, moreDiscussion, jobs, setCommentDraft, postComment, prepareMerge, confirmMerge, cancelMerge, context };
   }
-  function createPullRequestView({ node, t, boundedText, displayedBody, short, itemStatus, itemDate, avatarFor = () => null, onAuthorButton = () => {}, currentUser = () => null, supportsTextEditor = true, supportsNativeLayout = false, supportsNativeDiff = false, supportsNativeTimeline = false, supportsDetailAside = false, supportsItemRowIcon = false, supportsButtonIcon = false, supportsTabBarSummary = false, supportsContinuousContent = false, now = () => Date.now() }) {
+  function createPullRequestView({ node, t, boundedText, displayedBody, short, itemStatus, itemDate, avatarFor = () => null, onAuthorButton = () => {}, currentUser = () => null, supportsTextEditor = true, supportsNativeLayout = false, supportsNativeDiff = false, supportsNativeTimeline = false, supportsDetailAside = false, supportsItemRowIcon = false, supportsFileIcons = false, supportsButtonIcon = false, supportsTabBarSummary = false, supportsContinuousContent = false, now = () => Date.now() }) {
     const commitGroupIconSVG = '<svg xmlns="http://www.w3.org/2000/svg" width="32" height="32" viewBox="0 0 24 24"><g fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5"><circle cx="12" cy="12" r="3"/><path d="M9 12H3m12 0h6"/></g></svg>';
     const tabIconSVGs = {
       discussion: '<svg xmlns="http://www.w3.org/2000/svg" width="32" height="32" viewBox="0 0 24 24"><g fill="none" stroke="currentColor" stroke-linejoin="round" stroke-width="1.5"><path stroke-linecap="round" d="M7.5 12h6m-6-4h3m-2 12c1.05.87 2.315 1.424 3.764 1.519c1.141.075 2.333.075 3.473 0a4 4 0 0 0 1.188-.268c.41-.167.614-.25.719-.237c.104.012.255.122.557.342c.533.388 1.204.666 2.2.643c.503-.012.755-.019.867-.208c.113-.19-.027-.452-.308-.977c-.39-.728-.636-1.561-.262-2.229c.643-.954 1.19-2.083 1.27-3.303c.043-.655.043-1.334 0-1.99A6.7 6.7 0 0 0 21.4 11"/><path d="M12.345 17.487c3.556-.234 6.388-3.08 6.62-6.653c.046-.699.046-1.423 0-2.122c-.232-3.572-3.064-6.418-6.62-6.652c-1.213-.08-2.48-.08-3.69 0c-3.556.234-6.388 3.08-6.62 6.652c-.046.7-.046 1.423 0 2.122c.084 1.302.665 2.506 1.349 3.524c.397.712.135 1.6-.279 2.377c-.298.56-.447.84-.327 1.042s.387.209.922.221c1.057.026 1.77-.271 2.336-.685c.321-.234.482-.351.593-.365c.11-.013.328.075.763.253c.392.16.846.258 1.263.286c1.21.08 2.477.08 3.69 0Z"/></g></svg>',
@@ -1299,6 +1299,12 @@
         symbol: { added: 'doc.badge.plus', removed: 'doc.badge.minus', renamed: 'arrow.right', copied: 'doc.on.doc' }[file.status] || 'doc.text' };
     };
     const fileCounts = file => [text(`+${Number.isInteger(file.additions) ? file.additions : 0}`, 'monospaced', 'success'), text(`−${Number.isInteger(file.deletions) ? file.deletions : 0}`, 'monospaced', 'danger')];
+    const fileIconProperties = file => {
+      const path = file.filename;
+      if (!supportsFileIcons || typeof path !== 'string' || !path || bytes(path) > 4096 || /[\p{Cc}\p{Cf}\p{Zl}\p{Zp}]/u.test(path)) return {};
+      if (Array.from(path).some(character => { const code = character.codePointAt(0); return code >= 0xD800 && code <= 0xDFFF; })) return {};
+      return { fileIconPath: path };
+    };
     function nativeFiles(model) {
       const list = items(model, 'files'), state = section(model, 'files');
       const selected = list.find(file => file.filename === model.selectedFileID) || list[0];
@@ -1311,7 +1317,7 @@
       left.push(...list.map((file, index) => {
         const path = String(file.filename || t('File', '文件')), slash = path.lastIndexOf('/'), result = fileState(file);
         return nativeRow(boundedText(path.slice(slash + 1), 128, '…'), slash >= 0 ? boundedText(path.slice(0, slash), 192, '…') : '',
-          { action: `pr-file:${index}`, symbol: result.symbol, tone: result.tone, ...(file === selected ? { value: 'selected' } : {}) }, [row(fileCounts(file))]);
+          { action: `pr-file:${index}`, symbol: result.symbol, tone: result.tone, ...fileIconProperties(file), ...(file === selected ? { value: 'selected' } : {}) }, [row(fileCounts(file))]);
       }), ...sectionState(model, 'files', t('Files', '文件')));
       const right = [];
       if (!selected) right.push(node('emptyState', { text: state.error ? t('Files unavailable', '无法获取文件') : state.loading || !state.loaded ? t('Loading changed files…', '正在加载变更文件…') : t('No changed files', '暂无文件变更'),
@@ -2290,6 +2296,7 @@
     currentUser: () => state.user,
     supportsDetailAside: nora.features?.detailAside === true,
     supportsItemRowIcon: nora.features?.itemRowIcon === true,
+    supportsFileIcons: nora.features?.fileIcons === true,
     supportsButtonIcon: nora.features?.buttonIcon === true,
     supportsTabBarSummary: nora.features?.tabBarSummary === true,
     supportsContinuousContent: nora.features?.continuousContent === true && typeof nora.ui.lazyColumn === 'function' && typeof nora.ui.document === 'function',
