@@ -2276,7 +2276,10 @@
       `显示 ${visibleItems.length} 个已加载匹配；缩小仓库范围或搜索后可继续。`)));
     if (state.moreItems && hasLocalFilters) children.push(styledText(t(
       'Clear search or filters to continue loading by scrolling.', '清除搜索或筛选后可继续下拉加载。')));
-    if (state.itemsLoading) children.push(node('progress', { text: t('Loading items…', '正在加载条目…') }));
+    if (state.itemsLoading) children.push(visibleItems.length
+      ? node('progress', { text: t('Loading more…', '正在加载更多…') })
+      : node('progress', { id: 'github-items-loading', appearance: 'secondary',
+        text: state.kind === 'pulls' ? t('Loading pull requests…', '正在加载 PR…') : t('Loading Issues…', '正在加载 Issues…') }));
     const error = state.error || state.itemLoadError;
     if (error) children.push(node('badge', { text: short(error, 512), tone: 'danger' }),
       button(t('Try again', '重试'), 'retry-load', state.itemsLoading, { symbol: 'arrow.clockwise' }));
@@ -2357,14 +2360,12 @@
     return node('column', { id: 'item-details' }, children);
   }
   function emptyListView() {
-    if (state.itemsLoading) return node('emptyState', { id: 'github-items-loading', text: t('Loading from GitHub…', '正在从 GitHub 加载…'),
-      subtitle: t('Fetching Issues and pull requests you participate in.', '正在获取与你相关的 Issues 和 PR。'), symbol: 'arrow.clockwise' }, [node('progress')]);
+    const selection = node('emptyState', { text: state.kind === 'pulls' ? t('Select a pull request', '选择一条 PR') : t('Select an Issue', '选择一条 Issue'), textStyle: 'body', tone: 'muted' });
+    if (state.itemsLoading) return selection;
     if (state.error || state.itemLoadError) return node('emptyState', { text: t('Couldn’t load this view', '暂时无法加载'), subtitle: state.error || state.itemLoadError, symbol: 'exclamationmark.circle' },
       [button(state.error === message.expired ? t('Reconnect GitHub', '重新连接 GitHub') : t('Try again', '重试'),
         state.error === message.expired ? 'begin-login' : 'retry-load', false, { appearance: 'primary' }), button(message.manage, 'manage')]);
-    if (filteredItems().length) return node('emptyState', { text: state.kind === 'pulls' ? t('Select a pull request', '选择一条 PR') : t('Select an Issue', '选择一条 Issue'),
-      subtitle: state.kind === 'pulls' ? t('Read the conversation, review changes, and hand the work to Nora.', '查看讨论与变更，把需要处理的工作交给 Nora。')
-        : t('Read the description and hand the work to Nora.', '查看问题描述，把需要处理的工作交给 Nora。'), symbol: state.kind === 'pulls' ? 'arrow.triangle.pull' : 'circle.circle' });
+    if (filteredItems().length) return selection;
     if (state.moreItems && !(state.query.trim() || state.author || state.label)) return node('emptyState', { text: t('No matching items on the loaded pages', '已加载页面暂无匹配条目'),
       subtitle: t('Scroll down in the sidebar to load more items.', '在侧边栏下拉可继续加载条目。'), symbol: 'tray' });
     const filtered = state.query || state.author || state.label;

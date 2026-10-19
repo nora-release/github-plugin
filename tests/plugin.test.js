@@ -865,7 +865,10 @@ test('Fast Issues PR and legacy state events ignore late results and failures wh
   const earlier = f.render({ action: 'kind:pulls', values: { 'view-navigation': 'view-pulls' } });
   await started.promise;
   const pending = await earlier;
-  assert.match(texts(pending), /Loading from GitHub/);
+  const loading = nodes(pending.children[0]).find(node => node.id === 'github-items-loading');
+  assert.equal(loading.type, 'progress');
+  assert.equal(loading.appearance, 'secondary');
+  assert.equal(loading.text, 'Loading pull requests…');
   assert.doesNotMatch(texts(pending), /Initial Issue/);
   const latest = await f.render({ action: 'status', values: { status: 'all' } });
   assert.equal(nodes(latest).find(node => node.id === 'view-navigation').value, 'view-pulls');
@@ -893,7 +896,10 @@ test('The current data error remains recoverable after a local search during its
   const changing = f.render({ action: 'status', values: { status: 'closed' } });
   await started.promise;
   const pending = await f.render({ action: 'query', values: { query: 'Recovered' } });
-  assert.match(texts(pending), /Loading from GitHub/);
+  const loading = nodes(pending.children[0]).find(node => node.id === 'github-items-loading');
+  assert.equal(loading.type, 'progress');
+  assert.equal(loading.appearance, 'secondary');
+  assert.equal(loading.text, 'Loading Issues…');
   release.resolve();
   const failed = await changing;
   assert.match(texts(failed), /access was denied/);
