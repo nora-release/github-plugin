@@ -1188,7 +1188,7 @@
       const children = commentActions(model).filter(value => value.type !== 'divider');
       if (!children.length) return [];
       if (supportsNativeTimeline) return [node('timelineItem', { id: 'pr-comment-composer', value: 'comment' }, [
-        authorButton(model, { user: currentUser() || {} }, prURL(model)), row([text(t('Leave a comment', '留言')), node('spacer')]),
+        authorButton(model, { user: currentUser() || {} }, prURL(model)), row([]),
         column(children.filter(value => !(value.type === 'text' && value.textStyle === 'headline'))),
       ])];
       return [node('column', { id: 'pr-comment-composer', appearance: 'secondary' }, children)];

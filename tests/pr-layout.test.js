@@ -338,6 +338,8 @@ test('The conversation shares one avatar gutter while retaining complete message
   const composer = content.find(value => value.id === 'pr-comment-composer');
   assert.equal(composer.type, 'timelineItem');
   assert.equal(composer.children[0].text, 'viewer');
+  assert.equal(composer.children[1].type, 'row');
+  assert.equal(composer.children[1].children.length, 0, 'A compose-only card omits metadata without hiding controls on other editor cards');
   assert.ok(!flatten([composer.children[2]]).some(value => value.type === 'text' && value.textStyle === 'headline'), 'The editor body must not repeat a comment heading');
   assert.equal(nodes.find(value => value.type === 'textEditor').value, 'An unfinished review.');
   assert.ok(nodes.some(value => value.action === 'pr-comment'));
