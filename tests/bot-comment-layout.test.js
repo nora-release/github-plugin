@@ -97,6 +97,8 @@ test('Reviews and inline review comments retain full content even from bot autho
   for (const source of ['reviews', 'reviewComments']) {
     const entry = comment(botCommentBody, undefined, { state: 'CHANGES_REQUESTED', path: 'src/main.ts', line: 42 });
     const card = activity(model(source, entry))[0];
+    assert.deepEqual(Array.from(card.children[1].children, node => node.type), source === 'reviews'
+      ? ['spacer', 'text', 'badge'] : ['spacer', 'text'], 'Dates and review states stay together at the trailing edge');
     assert.ok(!collapsed(card));
     assert.ok(flatten([card]).some(value => value.type === 'markdown' && value.text === botCommentBody));
     assert.ok(card.children[0].action?.startsWith('pr-open:'), 'The author profile remains available');

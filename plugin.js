@@ -1135,6 +1135,7 @@
           if (created) metadata.push(text(created));
           if (entry.dismissed_review?.dismissal_message) body.push(...bodyPage(model, `dismissal:${entry.id}`, entry.dismissed_review.dismissal_message));
         } else {
+          metadata.push(node('spacer'));
           if (created) metadata.push(text(created));
           if (source === 'reviews') metadata.push(reviewState(entry.state));
           if (source === 'reviewComments') body.push(text([entry.path, Number.isInteger(entry.line || entry.original_line) ? t(`line ${entry.line || entry.original_line}`, `第 ${entry.line || entry.original_line} 行`) : '', entry.in_reply_to_id ? t(`Reply to #${entry.in_reply_to_id}`, `回复 #${entry.in_reply_to_id}`) : ''].filter(Boolean).join(' · '), 'monospaced'));
