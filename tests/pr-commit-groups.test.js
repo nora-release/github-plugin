@@ -250,7 +250,7 @@ test('Actual SDK toggle, avatar render, paginated grouping and delayed same-head
       if (url.pathname.endsWith('/actions/runs')) return body({ workflow_runs: [] });
       return body([]);
     } });
-  await f.renderReady({}); await f.render({ action: 'kind:pulls' });
+  await f.renderReady({}); await f.renderReady({ action: 'kind:pulls' });
   let page = await f.renderReady({ action: 'item:item-team/project/1' }), group = groups([page])[0];
   assert.equal(group.children[0].text, '2 commits', 'Repeated timeline source IDs must not erase distinct SHA records');
   const field = nodes(page).find(value => value.type === 'textEditor').id;

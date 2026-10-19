@@ -40,7 +40,7 @@ const groupHeader = page => group(page)?.children.find(node => node.type === 'it
 const commitRows = page => group(page)?.children.filter(node => node.type === 'timelineItem') || [];
 async function open(f) {
   await f.renderReady({});
-  await f.render({ action: 'kind:pulls' });
+  await f.renderReady({ action: 'kind:pulls' });
   return f.renderReady({ action: 'item:item-team/project/1' });
 }
 async function painted(f) {

@@ -145,7 +145,7 @@ test('The actual SDK keeps repeated force pushes in one expanded collection as s
       return body([]);
     } });
   await f.renderReady();
-  await f.render({ action: 'kind:pulls' });
+  await f.renderReady({ action: 'kind:pulls' });
   let page = await f.renderReady({ action: 'item:item-team/project/1' });
   const initial = groups([page])[0];
   assert.ok(initial);

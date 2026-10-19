@@ -22,7 +22,7 @@ function currentHost({ items = [pull(1), pull(2)], detail = async number => body
     return body([]);
   } });
 }
-async function list(f) { await f.renderReady({}); await f.render({ action: 'kind:pulls' }); }
+async function list(f) { await f.renderReady({}); await f.renderReady({ action: 'kind:pulls' }); }
 const detailNode = page => nodes(page).find(node => node.id === 'item-details');
 const tabs = page => nodes(page).find(node => node.id === 'pr-tabs');
 const loading = page => nodes(page).find(node => node.id === 'item-details-loading');

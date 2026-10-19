@@ -154,8 +154,8 @@ test('Items expose bounded scroll pagination metadata without any Load more item
 test('Every reload has a fresh scroll token even when returning to the same type, scope and first page', async () => {
   const f = fixture({ saved: connection, route: async url => basics(url) || searchBody([feedItem('team/project', 1), feedItem('team/project', 2, { pull_request: {} })], 200, next) });
   const first = (await f.renderReady({})).children[0].loadMoreToken;
-  await f.render({ action: 'kind:pulls' });
-  const returned = (await f.render({ action: 'kind:issues' })).children[0].loadMoreToken;
+  await f.renderReady({ action: 'kind:pulls' });
+  const returned = (await f.renderReady({ action: 'kind:issues' })).children[0].loadMoreToken;
   const refreshed = (await f.renderReady({ action: 'refresh' })).children[0].loadMoreToken;
   assert.notEqual(first, returned);
   assert.notEqual(returned, refreshed);
@@ -235,7 +235,7 @@ test('Chinese active sidebar keeps concise open and draft labels and excludes cl
     feedItem('team/project', 3, { pull_request: { merged_at: '2026-10-14' }, state: 'closed' }), feedItem('team/project', 4, { pull_request: {}, draft: true }),
   ]) });
   await f.renderReady({});
-  const view = await f.render({ action: 'kind:pulls' });
+  const view = await f.renderReady({ action: 'kind:pulls' });
   assert.deepEqual(Array.from(view.children[0].items, entry => [entry.children[0].text, entry.children[0].tone]),
     [['打开', 'success'], ['草稿', 'muted']]);
 });
@@ -246,7 +246,7 @@ test('Full PR details update the corresponding sidebar status while preserving i
   const f = fixture({ saved: connection, route: async url => basics(url) ||
     (url.pathname === '/search/issues' ? searchBody([first, second]) : body({ ...second, id: 9000, draft: true, body: 'Complete draft PR' })) });
   await f.renderReady({});
-  const initial = await f.render({ action: 'kind:pulls' });
+  const initial = await f.renderReady({ action: 'kind:pulls' });
   assert.deepEqual(Array.from(initial.children[0].items, entry => entry.children[0].text), ['Open', 'Open']);
   const selected = await f.renderReady({ action: 'item:item-other/project/7' });
   assert.deepEqual(Array.from(selected.children[0].items, entry => [entry.id, entry.children[0].text]),

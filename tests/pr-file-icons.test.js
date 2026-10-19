@@ -28,7 +28,7 @@ function host(files, capability) {
 
 async function openFiles(f) {
   await f.renderReady({});
-  await f.render({ action: 'kind:pulls' });
+  await f.renderReady({ action: 'kind:pulls' });
   await f.renderReady({ action: 'item:item-alice/project/1' });
   return f.render({ action: 'pr-tab:files' });
 }

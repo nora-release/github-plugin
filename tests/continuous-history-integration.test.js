@@ -30,7 +30,7 @@ function host({ timeline = [], comments = [], commits = [], description = 'Origi
 }
 async function open(f) {
   await f.renderReady();
-  await f.render({ action: 'kind:pulls' });
+  await f.renderReady({ action: 'kind:pulls' });
   return f.renderReady({ action: 'item:item-team/project/1' });
 }
 const list = (view, id = 'pr-conversation') => nodes(view).find(value => value.type === 'lazyColumn' && value.id === id);

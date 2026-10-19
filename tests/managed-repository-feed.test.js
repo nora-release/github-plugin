@@ -211,7 +211,8 @@ test('A late managed discovery failure during repository refresh cannot cover a 
   assert.deepEqual(itemActions(newer), ['item:item-alice/project/2']);
   const before = f.invalidations.length;
   release.resolve();
-  await f.waitForInvalidation(before);
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal(f.invalidations.length, before, 'A replaced refresh must not notify the host after its failure.');
   const after = await f.renderReady({});
   assert.deepEqual(itemActions(after), ['item:item-alice/project/2']);
   assert.match(texts(after), /New successful Issues result/);
@@ -242,7 +243,8 @@ test('A late repository picker failure during refresh cannot cover a newer succe
   assert.deepEqual(itemActions(newer), ['item:item-alice/project/2']);
   const before = f.invalidations.length;
   release.resolve();
-  await f.waitForInvalidation(before);
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal(f.invalidations.length, before, 'A replaced refresh must not notify the host after its failure.');
   const after = await f.renderReady({});
   assert.deepEqual(itemActions(after), ['item:item-alice/project/2']);
   assert.match(texts(after), /New successful Issues result/);

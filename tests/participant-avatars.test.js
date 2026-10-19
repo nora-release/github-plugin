@@ -35,7 +35,7 @@ function participantFixture({ pulls = [pull()], comments = [], reviews = [], rev
   } });
 }
 async function openPR(f, number = 1) {
-  await f.renderReady({}); await f.render({ action: 'kind:pulls' });
+  await f.renderReady({}); await f.renderReady({ action: 'kind:pulls' });
   return f.renderReady({ action: `item:item-team/project/${number}` });
 }
 async function painted(f) { await tick(); return f.render({}); }
@@ -61,7 +61,7 @@ test('Case-insensitive identity reuses a repository owner image and does not dow
   const f = participantFixture({ pulls: [pull(1, { user: user('TEAM', 40) })], comments: [{ id: 1, user: user('team', 40), body: 'Same owner', created_at: '2026-10-15T00:00:00Z' }],
     override: url => url.pathname === '/user/repos' ? body([{ ...repo('team/project'), owner: user('TeAm', 40) }]) : undefined });
   await f.renderReady({}); await tick();
-  await f.render({ action: 'kind:pulls' }); await f.renderReady({ action: 'item:item-team/project/1' });
+  await f.renderReady({ action: 'kind:pulls' }); await f.renderReady({ action: 'item:item-team/project/1' });
   const current = await painted(f);
   assert.equal(author(current, 'TEAM')?.avatarBase64, image);
   assert.equal(author(current, 'team')?.avatarBase64, image);

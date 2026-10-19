@@ -693,7 +693,7 @@ test('Nora context includes CI, reviews, comments and activity without replacing
 
 
 async function openFixturePR(f) {
-  await f.renderReady({}); await f.render({ action: 'kind:pulls' });
+  await f.renderReady({}); await f.renderReady({ action: 'kind:pulls' });
   return f.renderReady({ action: 'item:item-alice/project/1' });
 }
 function fixtureRoute({ mutation = async () => assert.fail('Unexpected mutation'), detail = () => pull() } = {}) {
@@ -763,7 +763,7 @@ test('A full PR feed with large discussion and typed draft stays within native w
     const response = defaultRead(url.pathname + url.search);
     return body(response.data, 200, response.headers);
   } });
-  await f.renderReady({}); await f.render({ action: 'kind:pulls' });
+  await f.renderReady({}); await f.renderReady({ action: 'kind:pulls' });
   for (let page = 2; page <= 8; page++) await f.render({ action: 'more-items' });
   const selected = await f.renderReady({ action: 'item:item-alice/project/400' });
   const editor = nodes(selected).find(node => node.type === 'textEditor' && node.id.startsWith('pr-comment-'));

@@ -38,7 +38,7 @@ for (const [kind, extra, label, tone, symbol] of [
     const item = pull(7, extra);
     const f = fixture({ saved: connection, route: async url => basics(url) || (url.pathname === '/search/issues' ? searchBody([pull(7, kind === 'closed' ? {} : extra)]) : body(item)) });
     await f.renderReady({});
-    const overview = await f.render({ action: 'kind:pulls' });
+    const overview = await f.renderReady({ action: 'kind:pulls' });
     const selected = await f.renderReady({ action: 'item:item-alice/project/7' });
     assertHeading(selected, item, 'PR', label);
     const badges = kind === 'closed' ? [detailBadge(selected)] : [overview.children[0].items[0].children[0], selected.children[0].items[0].children[0], detailBadge(selected)];
@@ -62,7 +62,7 @@ test('PRs discovered merged leave the sidebar and retain the exact merged SVG ah
     const item = pull(7, { state: 'closed', draft: true, ...extra });
     const f = fixture({ saved: connection, route: async url => basics(url) || (url.pathname === '/search/issues' ? searchBody([pull(7, { draft: true })]) : body(item)) });
     await f.renderReady({});
-    const overview = await f.render({ action: 'kind:pulls' });
+    const overview = await f.renderReady({ action: 'kind:pulls' });
     const selected = await f.renderReady({ action: 'item:item-alice/project/7' });
     assertHeading(selected, item, 'PR', 'Merged');
     assert.equal(overview.children[0].items[0].children[0].text, 'Draft');
@@ -96,7 +96,7 @@ test('Merged status remains in the heading and legacy readiness views without a 
         if (url.pathname.endsWith('/actions/runs')) return body({ workflow_runs: [] });
         return body([]);
       } });
-    await f.renderReady({}); await f.render({ action: 'kind:pulls' });
+    await f.renderReady({}); await f.renderReady({ action: 'kind:pulls' });
     const selected = await f.renderReady({ action: 'item:item-alice/project/7' });
     assert.equal(selected.children[0].items.length, 0);
     for (const badge of [detailBadge(selected)]) {
@@ -147,7 +147,7 @@ test('A full draft PR detail updates the sidebar from the open SVG to the draft 
   const f = fixture({ saved: connection, route: async url => basics(url) ||
     (url.pathname === '/search/issues' ? searchBody([item]) : body({ ...item, draft: true })) });
   await f.renderReady({});
-  const overview = await f.render({ action: 'kind:pulls' });
+  const overview = await f.renderReady({ action: 'kind:pulls' });
   assert.equal(overview.children[0].items[0].children[0].iconSVG, expectedIcons.open);
   const selected = await f.renderReady({ action: 'item:item-alice/project/7' });
   assert.equal(selected.children[0].items[0].children[0].iconSVG, expectedIcons.draft);
@@ -160,7 +160,7 @@ test('Long Unicode PR and Issue titles stay bounded while their status and numbe
     const item = issue(987654, '修复 🧑🏽‍💻 editor selection '.repeat(800), kind === 'pulls' ? { pull_request: {} } : {});
     const f = fixture({ saved: connection, route: async url => basics(url) || (url.pathname === '/search/issues' ? searchBody([item]) : body(item)) });
     await f.renderReady({});
-    if (kind === 'pulls') await f.render({ action: 'kind:pulls' });
+    if (kind === 'pulls') await f.renderReady({ action: 'kind:pulls' });
     const selected = await f.renderReady({ action: 'item:item-alice/project/987654' });
     const heading = detailHeading(selected), [status, title, number] = heading.children;
     assert.equal(heading.type, 'row');
@@ -182,7 +182,7 @@ test('Hosts without native detail support retain the previous standalone title a
     const f = fixture({ saved: connection, unavailableViewKinds: ['detail'],
       route: async url => basics(url) || (url.pathname === '/search/issues' ? searchBody([item]) : body(item)) });
     await f.renderReady({});
-    if (kind === 'pulls') await f.render({ action: 'kind:pulls' });
+    if (kind === 'pulls') await f.renderReady({ action: 'kind:pulls' });
     const selected = await f.renderReady({ action: 'item:item-alice/project/42' }), detail = selected.children[1];
     assert.equal(detail.type, 'column');
     assert.equal(detail.children[1].children[0].type, 'text');
@@ -199,7 +199,7 @@ test('Paginated PR SVG badges stay inside Swift encoded view and node limits', a
     return pull(number, number % 3 === 0 ? { draft: true } : {});
   }), 200, { link: '<https://api.github.com/search/issues?page=2>; rel="next"' }) });
   await f.renderReady({});
-  let view = await f.render({ action: 'kind:pulls' });
+  let view = await f.renderReady({ action: 'kind:pulls' });
   for (let page = 2; page <= 8; page++) view = await f.render({ action: 'more-items' });
   const withSwiftDefaults = item => ({ ...item, disabled: item.disabled || false, options: item.options || [],
     children: (item.children || []).map(withSwiftDefaults), items: (item.items || []).map(withSwiftDefaults) });

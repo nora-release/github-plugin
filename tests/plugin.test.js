@@ -298,7 +298,7 @@ test('Issues exclude PRs and the active PR view keeps drafts while excluding mer
       issue(4, 'Finished', { pull_request: {}, state: 'closed', merged_at: '2026-10-01T00:00:00Z' })]);
   } });
   assert.doesNotMatch(texts(await f.renderReady({})), /Work in progress|Finished/);
-  const view = await f.render({ action: 'kind', values: { kind: 'pulls' } });
+  const view = await f.renderReady({ action: 'kind', values: { kind: 'pulls' } });
   assert.match(texts(view.children[0]), /Work in progress/);
   assert.doesNotMatch(texts(view.children[0]), /Finished/);
   assert.doesNotMatch(texts(view.children[0]), /Real issue/);
@@ -708,7 +708,7 @@ test('Search repository and local filters stay with the issue list while account
   assert.deepEqual(Array.from(filtered.children[0].items, item => item.text), ['Settings fix']);
   assert.match(texts(filtered.children[0]), /Filters · 1/);
   assert.equal(f.requests.length, requestCount);
-  const switched = await f.render({ action: 'kind:pulls' });
+  const switched = await f.renderReady({ action: 'kind:pulls' });
   assert.equal(nodes(switched.children[0]).find(node => node.id === 'view-navigation').value, 'view-pulls');
   assert.equal(new URL(f.requests.at(-1).url).pathname, '/search/issues');
   assert.match(texts(switched.children[0]), /Review native changes/);
@@ -727,7 +727,7 @@ test('A selected PR has one detail header and a complete Markdown description be
     })]);
   } });
   await f.renderReady({});
-  await f.render({ action: 'kind:pulls' });
+  await f.renderReady({ action: 'kind:pulls' });
   const requestCount = f.requests.length;
   const selected = await f.renderReady({ action: 'item:item-alice/project/42' });
   const detail = selected.children[1];
@@ -864,11 +864,16 @@ test('Fast Issues PR and legacy state events ignore late results and failures wh
   await f.renderReady({});
   const earlier = f.render({ action: 'kind:pulls', values: { 'view-navigation': 'view-pulls' } });
   await started.promise;
+  const pending = await earlier;
+  assert.match(texts(pending), /Loading from GitHub/);
+  assert.doesNotMatch(texts(pending), /Initial Issue/);
   const latest = await f.render({ action: 'status', values: { status: 'all' } });
   assert.equal(nodes(latest).find(node => node.id === 'view-navigation').value, 'view-pulls');
   assert.match(texts(latest), /Current open PR/);
+  const before = f.invalidations.length;
   release.resolve();
-  const final = await earlier;
+  await f.waitForInvalidation(before);
+  const final = await f.renderReady({});
   assert.ok(!nodes(final).some(node => node.id === 'status'));
   assert.match(new URL(apiRequests(f).at(-1).url).searchParams.get('q'), /state:open/);
   assert.doesNotMatch(texts(final), /not found|Initial Issue/);
@@ -979,7 +984,7 @@ test('The sidebar lists account items and repository selection narrows the exist
   assert.deepEqual(Array.from(selector.options, option => option.value), ['', 'alice/first', 'team/second']);
   assert.equal(initial.children[0].items[0].text, 'First issue');
   assert.ok(!initial.children[0].items.some(item => item.text === 'alice/first' || item.text === 'team/second'));
-  await f.render({ action: 'kind:pulls', values: { 'view-navigation': 'view-pulls' } });
+  await f.renderReady({ action: 'kind:pulls', values: { 'view-navigation': 'view-pulls' } });
   const switched = await f.render({ action: 'repository', values: { repository: 'team/second' } });
   assert.equal(nodes(switched.children[0]).find(node => node.id === 'repository').value, 'team/second');
   assert.equal(nodes(switched.children[0]).find(node => node.id === 'view-navigation').value, 'view-pulls');
@@ -1057,7 +1062,7 @@ test('Nora draft context tracks the current repository PR and rejects stale or h
   await f.render({ action: 'repository', values: { repository: 'team/second' } });
   await f.render({ action: 'handoff-item' });
   assert.equal(f.drafts.length, 0);
-  await f.render({ action: 'kind:pulls' });
+  await f.renderReady({ action: 'kind:pulls' });
   await f.renderReady({ action: 'item:item-team/second/7' });
   await f.render({ action: 'handoff-item' });
   assert.match(f.drafts[0].context, /Repository: team\/second\nType: PR/);

@@ -32,7 +32,7 @@ function currentHost(options = {}) {
     } });
 }
 async function open(f) {
-  await f.renderReady({}); await f.render({ action: 'kind:pulls' });
+  await f.renderReady({}); await f.renderReady({ action: 'kind:pulls' });
   return f.renderReady({ action: 'item:item-team/project/1' });
 }
 

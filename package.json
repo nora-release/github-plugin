@@ -1,6 +1,6 @@
 {
   "name": "@nora/github-plugin",
-  "version": "0.10.29",
+  "version": "0.10.30",
   "private": true,
   "type": "module",
   "packageManager": "pnpm@11.5.3",
@@ -12,6 +12,6 @@
     "check": "node --check plugin.js"
   },
   "devDependencies": {
-    "@nora/plugin-kit": "github:nora-release/plugin-kit#v0.21.0"
+    "@nora/plugin-kit": "github:nora-release/plugin-kit#v0.22.0"
   }
 }

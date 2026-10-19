@@ -44,7 +44,7 @@ test('Issue and PR searches retain distinct repository-number identities and do 
   const issues = await f.renderReady({});
   assert.deepEqual(itemActions(issues), [`item:${key('alice/project', 7)}`, `item:${key('team/second', 7)}`]);
   assert.doesNotMatch(texts(issues), /Real pull/);
-  const pulls = await f.render({ action: 'kind:pulls' });
+  const pulls = await f.renderReady({ action: 'kind:pulls' });
   assert.deepEqual(itemActions(pulls), [`item:${key('team/second', 8)}`]);
   assert.doesNotMatch(texts(pulls), /First issue|Second issue/);
   assert.equal(f.requests.filter(request => new URL(request.url).pathname === '/search/issues').length, 2);
@@ -55,7 +55,7 @@ test('A page with only the other kind retains the server next page and reaches l
     ? searchBody([feedItem('team/second', 42, 'Later pull', { pull_request: {} })])
     : searchBody([feedItem('alice/project', 1, 'Other kind')], 200, { link: '<https://api.github.com/search/issues?page=2>; rel="next"' }));
   await f.renderReady({});
-  const first = await f.render({ action: 'kind:pulls' });
+  const first = await f.renderReady({ action: 'kind:pulls' });
   assert.equal(itemActions(first).length, 0);
   assert.equal(first.children[0].loadMoreAction, 'more-items');
   assert.ok(first.children[0].loadMoreToken);
@@ -95,7 +95,7 @@ test('Personal queries exclude unrelated public repository activity and include 
     return searchBody([relevant]);
   } });
   assert.deepEqual(itemActions(await f.renderReady({})), []);
-  const pulls = await f.render({ action: 'kind:pulls' });
+  const pulls = await f.renderReady({ action: 'kind:pulls' });
   assert.deepEqual(itemActions(pulls), [`item:${key('vitest-dev/docs-cn', 28)}`]);
   assert.match(texts(pulls), /Review requested from Alice/);
   assert.doesNotMatch(texts(pulls), new RegExp(unrelated.title));
@@ -129,7 +129,7 @@ test('Incoming PRs to owned repositories do not require author involvement or a 
       : searchBody([incoming], 200, { Link: '<https://api.github.com/search/issues?page=2>; rel="next"' });
   } });
   await f.renderReady({});
-  const first = await f.render({ action: 'kind:pulls' });
+  const first = await f.renderReady({ action: 'kind:pulls' });
   assert.deepEqual(itemActions(first), [`item:${key('alice/not-in-picker', 41)}`]);
   assert.match(texts(first), /Contributor proposes a fix/);
   const next = await f.render({ action: 'more-items' });
@@ -157,12 +157,12 @@ test('Open personal scope survives pagination, repository selection, legacy stat
   await f.render({ action: 'more-items' });
   await f.render({ action: 'repository', value: 'team/second' });
   await f.render({ action: 'status', value: 'closed' });
-  await f.render({ action: 'kind:pulls' });
+  await f.renderReady({ action: 'kind:pulls' });
   await f.render({ action: 'more-items' });
   await f.render({ action: 'status', value: 'all' });
   await f.render({ action: 'all-states' });
   await f.render({ action: 'repository', value: '' });
-  await f.render({ action: 'kind:issues' });
+  await f.renderReady({ action: 'kind:issues' });
   assert.deepEqual(queries, [
     { query: 'is:issue state:open archived:false involves:alice', page: '1' },
     { query: 'is:issue state:open archived:false involves:alice', page: '2' },
@@ -286,7 +286,7 @@ test('Selecting a PR uses the pulls detail API even though the feed item used th
     : url.pathname === '/repos/team/second/pulls/7' ? body({ ...item, id: 2000, body: 'Full PR details', merged_at: '2026-10-15T00:00:00Z' })
     : assert.fail(`Unexpected URL: ${url}`));
   await f.renderReady({});
-  await f.render({ action: 'kind:pulls' });
+  await f.renderReady({ action: 'kind:pulls' });
   const view = await f.renderReady({ action: `item:${key('team/second', 7)}` });
   assert.match(texts(view), /Full PR details|Merged/);
   assert.equal(view.value, key('team/second', 7));
@@ -551,7 +551,7 @@ test('The active feed excludes stale closed merged and missing-state search resu
       ...variants.map(([title, changes], index) => feedItem('alice/project', index + 3, title, { ...extra, ...changes })),
     ]));
     let view = await f.renderReady({});
-    if (kind === 'pulls') view = await f.render({ action: 'kind:pulls' });
+    if (kind === 'pulls') view = await f.renderReady({ action: 'kind:pulls' });
     assert.deepEqual(itemActions(view), [`item:${key('alice/project', 1)}`, `item:${key('alice/project', 2)}`]);
     assert.match(texts(view.children[0]), /Still pending|Draft remains actionable/);
     for (const [title] of variants) assert.ok(!texts(view).includes(title));
@@ -586,7 +586,7 @@ test('Issue and PR feeds reject archived target metadata while retaining active 
     });
     const f = feedFixture(async () => searchBody([archived, archivedBase, active, unknown, draft, archivedFork, unrelatedBase]));
     let view = await f.renderReady({});
-    if (kind === 'pulls') view = await f.render({ action: 'kind:pulls' });
+    if (kind === 'pulls') view = await f.renderReady({ action: 'kind:pulls' });
     assert.deepEqual(itemActions(view), [
       `item:${key('team/active', 3)}`, `item:${key('team/unknown', 4)}`, `item:${key('team/draft', 5)}`,
       `item:${key('team/current', 6)}`, `item:${key('team/current', 7)}`,
@@ -641,7 +641,7 @@ test('A page containing only archived work retains pagination and reaches active
         })], 200, { Link: '<https://api.github.com/search/issues?page=2>; rel="next"' });
     });
     let initial = await f.renderReady({});
-    if (kind === 'pulls') initial = await f.render({ action: 'kind:pulls' });
+    if (kind === 'pulls') initial = await f.renderReady({ action: 'kind:pulls' });
     assert.deepEqual(itemActions(initial), []);
     assert.equal(initial.children[0].loadMoreAction, 'more-items');
     assert.ok(initial.children[0].loadMoreToken);
@@ -716,7 +716,7 @@ test('An archived PR target discovered on refresh leaves readable details and st
     return body([]);
   });
   await f.renderReady({});
-  await f.render({ action: 'kind:pulls' });
+  await f.renderReady({ action: 'kind:pulls' });
   const initial = await f.renderReady({ action: `item:${key('team/second', 7)}` });
   assert.deepEqual(itemActions(initial), [`item:${key('team/second', 7)}`]);
   archived = true;

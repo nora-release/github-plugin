@@ -1459,7 +1459,7 @@
     network: t('GitHub could not be reached. Try again.', '无法连接 GitHub，请重试。'),
     invalid: t('GitHub returned an invalid response. Try again.', 'GitHub 返回了无效结果，请重试。'),
   };
-  const state = { user: null, avatarBase64: null, avatarAccount: '', avatarURL: '', repos: [], repo: '', repoQuery: '', items: [], kind: 'issues', query: '', author: '', label: '', page: 1, repoPage: 1, moreItems: false, moreRepos: false, selected: null, detailsVisible: false, detailLoading: false, detailError: '', detailTab: 'discussion', device: null, error: '', itemLoadError: '', itemRetryAppend: false, restored: false, showToken: false, showOtherRepository: false, manualRepository: '', itemsLoading: false, reposLoading: false };
+  const state = { user: null, avatarBase64: null, avatarAccount: '', avatarURL: '', repos: [], repo: '', repoQuery: '', items: [], kind: 'issues', sidebarContentKind: 'issues', query: '', author: '', label: '', page: 1, repoPage: 1, moreItems: false, moreRepos: false, selected: null, detailsVisible: false, detailLoading: false, detailError: '', detailTab: 'discussion', device: null, error: '', itemLoadError: '', itemRetryAppend: false, restored: false, showToken: false, showOtherRepository: false, manualRepository: '', itemsLoading: false, reposLoading: false };
   const avatars = new Map();
   let issueBodyPages = {};
   let participantButtons = new WeakMap();
@@ -1796,6 +1796,7 @@
       const completedKeys = new Set(append ? state.items.filter(item => !isActionableItem(item)).map(itemKey) : []);
       const incoming = result.items.filter(item => !completedKeys.has(itemKey(item)));
       state.items = uniqueItems(append ? [...state.items, ...incoming] : incoming);
+      state.sidebarContentKind = requestedKind;
       state.moreItems = !!result.nextPage;
       if (state.selected && !state.items.some(item => itemKey(item) === itemKey(state.selected))) clearDetails();
     } catch (error) {
@@ -2032,7 +2033,7 @@
     avatars.clear(); visibleParticipants.clear(); visibleParticipantPage = ''; participantButtons = new WeakMap(); participantCommitsOperation = null;
     state.itemLoadError = ''; state.itemRetryAppend = false;
     state.moreItems = false; state.moreRepos = false;
-    state.page = 1; state.repoPage = 1; state.query = ''; state.repoQuery = ''; state.author = ''; state.label = ''; state.kind = 'issues';
+    state.page = 1; state.repoPage = 1; state.query = ''; state.repoQuery = ''; state.author = ''; state.label = ''; state.kind = 'issues'; state.sidebarContentKind = 'issues';
     clearDetails(); state.showToken = false; state.showOtherRepository = false;
     state.manualRepository = ''; state.itemsLoading = false; state.reposLoading = false;
     ++itemRevision; ++repoRevision;
@@ -2284,6 +2285,7 @@
         : state.query || state.author || state.label ? t('No matching loaded items.', '已加载条目中没有匹配结果。')
           : state.kind === 'pulls' ? t('No pull requests in this view.', '当前范围暂无 PR。') : t('No Issues in this view.', '当前范围暂无 Issues。')));
     return node('sidebar', { id: 'item-navigation', value: state.selected && state.detailsVisible && isActionableItem(state.selected) ? itemKey(state.selected) : '',
+      ...(nora.features?.sidebarContentTransition === true ? { contentTransitionKey: state.sidebarContentKind } : {}),
       ...(state.moreItems && !state.itemsLoading && !state.itemLoadError && !reachedLimit && !hasLocalFilters
         ? { loadMoreAction: 'more-items', loadMoreToken: feedToken() } : {}),
       items: visibleItems.map((item, index) => {
@@ -2539,7 +2541,7 @@
         state.kind = action === 'kind' ? event.value ?? values.kind : action.slice(5);
         if (!['issues', 'pulls'].includes(state.kind)) state.kind = 'issues';
         state.showOtherRepository = false; state.query = ''; state.author = ''; state.label = '';
-        await readItems();
+        await readFeed(() => loadItems());
       }
       else if (action === 'status' || action === 'all-states') await readItems();
       else if (action === 'query') { state.query = short(event.value ?? values.query ?? '', 1024); clearHiddenSelection(); }
