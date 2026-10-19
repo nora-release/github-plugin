@@ -629,7 +629,7 @@ test('A native workspace lists issues in its sidebar and opens full details dire
   assert.equal(viewNavigation.value, 'view-issues');
   assert.deepEqual(Array.from(viewNavigation.items, item => item.action), ['kind:issues', 'kind:pulls']);
   assert.match(viewNavigation.items[0].iconSVG, /M8\.5 7\.5/);
-  assert.equal(viewNavigation.items[1].iconSVG, undefined);
+  assert.match(viewNavigation.items[1].iconSVG, /M6 8v8m12 0v-4/);
   const item = sidebar.items[0];
   assert.equal(item.type, 'navigationItem');
   assert.equal(item.id, 'item-alice/project/1');

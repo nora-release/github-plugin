@@ -2199,7 +2199,8 @@
       node('sidebar', { id: 'view-navigation', value: `view-${state.kind}`, items: [
         node('navigationItem', { id: 'view-issues', text: 'Issues', symbol: 'circle.circle', action: 'kind:issues',
           ...(nora.features?.navigationItemIcon === true ? { iconSVG: issueNavigationIconSVG } : {}) }),
-        node('navigationItem', { id: 'view-pulls', text: t('Pull requests', 'PR'), symbol: 'arrow.triangle.pull', action: 'kind:pulls' })
+        node('navigationItem', { id: 'view-pulls', text: t('Pull requests', 'PR'), symbol: 'arrow.triangle.pull', action: 'kind:pulls',
+          ...(nora.features?.navigationItemIcon === true ? { iconSVG: pullRequestIcons.open } : {}) })
       ] }), node('column', { id: 'github-feed-controls', appearance: 'plain' }, [node('textField', { id: 'query', action: 'query',
         placeholder: t('Search loaded items', '搜索已加载条目'), value: state.query, symbol: 'magnifyingglass' }),
         row([repositoryPicker(), filterMenu()])])];
