@@ -842,7 +842,7 @@
           open(model, t('Comment on GitHub', '在 GitHub 留言'), prURL(model)), node('divider'));
       } else if (model.tab === 'discussion' || model.tab === 'overview' || !model.tab) {
         result.push(text(t('Leave a comment', '留言'), 'headline', 'neutral'), node('textEditor', { id: comment.fieldID || `pr-comment-${model.key}`, text: t('Comment', '留言'), textStyle: 'body', placeholder: t('Write a comment…', '写下你的留言…'), value: comment.draft || '', disabled: !!comment.busy }),
-          row([button(comment.busy ? t('Posting…', '正在发送…') : t('Post comment', '发送留言'), 'pr-comment', { appearance: 'secondary', symbol: 'text.bubble', disabled: !!comment.busy || !!repo.archived })]));
+          row([node('spacer'), button(comment.busy ? t('Posting…', '正在发送…') : t('Post comment', '发送留言'), 'pr-comment', { appearance: 'primary', disabled: !!comment.busy || !!repo.archived })]));
         if (comment.error) result.push(badge(comment.error, 'danger', 'exclamationmark.circle'));
         if (comment.notice) result.push(badge(comment.notice, 'success', 'checkmark.circle'));
         if (comment.uncertain) result.push(badge(t('The response was interrupted. Refresh the discussion before sending again.', '响应中断，重新发送前请刷新讨论确认留言是否已发布。'), 'warning', 'exclamationmark.circle'));

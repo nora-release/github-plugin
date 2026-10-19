@@ -207,7 +207,19 @@ test('The comment editor uses the current field revision and typing does not lea
   current.comment.fieldID = 'pr-comment-owner/repo/1-4';
   const actions = flatten(view().actions(current));
   assert.ok(actions.some(value => value.type === 'textEditor' && value.id === 'pr-comment-owner/repo/1-4'));
-  assert.ok(actions.some(value => value.action === 'pr-comment' && !value.disabled));
+  const submit = actions.find(value => value.action === 'pr-comment');
+  assert.ok(submit && !submit.disabled);
+  assert.equal(submit.appearance, 'primary');
+  assert.equal(submit.symbol, undefined);
+  const footer = actions.find(value => value.type === 'row' && value.children.includes(submit));
+  assert.deepEqual(Array.from(footer.children, value => value.type), ['spacer', 'button']);
+  current.comment.busy = true;
+  const posting = flatten(view().actions(current));
+  assert.ok(posting.find(value => value.type === 'textEditor').disabled);
+  assert.ok(posting.some(value => value.action === 'pr-comment' && value.disabled && value.text === 'Posting…'));
+  current.comment.busy = false;
+  current.sections.repository.data.archived = true;
+  assert.ok(flatten(view().actions(current)).some(value => value.action === 'pr-comment' && value.disabled));
 });
 
 test('Native PR tabs keep one current section and expose counts separately from labels', () => {
@@ -326,6 +338,7 @@ test('The conversation shares one avatar gutter while retaining complete message
   const composer = content.find(value => value.id === 'pr-comment-composer');
   assert.equal(composer.type, 'timelineItem');
   assert.equal(composer.children[0].text, 'viewer');
+  assert.ok(!flatten([composer.children[2]]).some(value => value.type === 'text' && value.textStyle === 'headline'), 'The editor body must not repeat a comment heading');
   assert.equal(nodes.find(value => value.type === 'textEditor').value, 'An unfinished review.');
   assert.ok(nodes.some(value => value.action === 'pr-comment'));
   const readiness = content.find(value => value.id === 'pr-readiness');
