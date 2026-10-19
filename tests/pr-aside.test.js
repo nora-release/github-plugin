@@ -11,6 +11,9 @@ const section = (items = [], changes = {}) => ({ items, loaded: true, loading: f
 const flatten = nodes => nodes.flatMap(node => [node, ...flatten(node.children || []), ...flatten(node.items || [])]);
 const text = nodes => flatten(nodes).map(node => node.text || '').join('\n');
 const account = login => ({ login, html_url: `https://github.com/${login}`, avatar_url: `https://avatars.githubusercontent.com/${login}` });
+const mergeSettings = methods => ({ permissions: { push: true }, ...Object.fromEntries([
+  ['merge', 'allow_merge_commit'], ['squash', 'allow_squash_merge'], ['rebase', 'allow_rebase_merge'],
+].map(([method, field]) => [field, methods.includes(method)])) });
 const view = (changes = {}) => createView({
   node: (type, properties = {}, children = []) => ({ type, ...properties, children }), t: en => en,
   boundedText: (value, maximum, suffix = '') => Buffer.byteLength(String(value)) <= maximum ? String(value) : String(value).slice(0, maximum - suffix.length) + suffix,
@@ -132,18 +135,27 @@ test('Loaded or incomplete comments and checks never restore removed context sec
   assert.deepEqual(api.nativeAside(current), expected);
 });
 
-test('Merge access stays in the modern toolbar only for an open writable repository', () => {
+test('The modern toolbar has a merge method menu only for an open writable repository', () => {
   const current = model(), api = view();
-  current.sections.repository = section([], { data: { permissions: { push: true } } });
+  current.item.mergeable = true; current.item.mergeable_state = 'clean';
+  current.sections.repository = section([], { data: mergeSettings(['merge', 'squash', 'rebase']) });
   for (const tab of ['discussion', 'checks', 'commits', 'files']) {
     current.tab = tab;
     const actions = api.nativeToolbarActions(current);
     assert.equal(actions.length, 1);
-    assert.equal(actions[0].action, 'pr-toggle-merge');
+    assert.equal(actions[0].type, 'menu');
+    assert.equal(actions[0].id, 'pr-merge-menu');
+    assert.equal(actions[0].text, 'Merge');
+    assert.equal(actions[0].action, undefined);
     assert.equal(actions[0].disabled, false);
+    assert.deepEqual(Array.from(actions[0].children.filter(node => node.action?.startsWith('pr-merge:')), node => node.action),
+      ['pr-merge:merge', 'pr-merge:squash', 'pr-merge:rebase']);
+    assert.ok(actions[0].children.filter(node => node.action?.startsWith('pr-merge:')).every(node => node.disabled === false));
   }
   current.merge.busy = true;
-  assert.equal(api.nativeToolbarActions(current)[0].disabled, true);
+  const busyMenu = api.nativeToolbarActions(current)[0];
+  assert.equal(busyMenu.disabled, true);
+  assert.ok(busyMenu.children.filter(node => node.action).every(node => node.disabled === true));
   current.merge.busy = false;
   for (const changes of [{ state: 'closed' }, { state: undefined }, { draft: true }, { merged: true }, { merged_at: '2026-10-16' }, { pull_request: { merged_at: '2026-10-16' } }]) {
     const original = current.item; current.item = { ...original, ...changes };
@@ -157,6 +169,45 @@ test('Merge access stays in the modern toolbar only for an open writable reposit
   }
   for (const changes of [{ supportsDetailAside: false }, { supportsNativeLayout: false }, { supportsNativeTimeline: false }]) {
     assert.equal(view(changes).nativeToolbarActions(current).length, 0);
+  }
+});
+
+test('The merge menu lists only explicitly enabled repository methods for single multiple all and empty settings', () => {
+  const api = view(), current = model();
+  current.item.mergeable = true; current.item.mergeable_state = 'clean';
+  for (const methods of [['merge'], ['squash'], ['rebase'], ['merge', 'squash'], ['squash', 'rebase'], ['merge', 'squash', 'rebase'], []]) {
+    current.sections.repository = section([], { data: mergeSettings(methods) });
+    const menu = api.nativeToolbarActions(current)[0];
+    assert.equal(menu.type, 'menu');
+    assert.deepEqual(Array.from(menu.children.filter(node => node.action?.startsWith('pr-merge:')), node => node.action),
+      methods.map(method => `pr-merge:${method}`));
+    if (!methods.length) assert.match(text([menu]), /No merge method.*enabled/i);
+  }
+  current.sections.repository = section([], { data: { permissions: { push: true }, allow_merge_commit: 'true', allow_squash_merge: 1 } });
+  const unknownSettings = api.nativeToolbarActions(current)[0];
+  assert.ok(!unknownSettings.children.some(node => node.action?.startsWith('pr-merge:')));
+  assert.match(text([unknownSettings]), /No merge method.*enabled/i);
+});
+
+test('Blocked merge methods remain visible with a reason and unknown status offers refresh', () => {
+  const api = view(), current = model();
+  current.sections.repository = section([], { data: mergeSettings(['merge', 'squash', 'rebase']) });
+  for (const [changes, reason, refresh] of [
+    [{ mergeable: false, mergeable_state: 'dirty' }, /conflict/i, false],
+    [{ mergeable: true, mergeable_state: 'blocked' }, /rules.*block/i, false],
+    [{ mergeable: true, mergeable_state: 'behind' }, /source branch/i, false],
+    [{ mergeable: null, mergeable_state: 'unknown' }, /calculating merge status/i, true],
+    [{ mergeable: undefined, mergeable_state: 'unknown' }, /calculating merge status/i, true],
+  ]) {
+    Object.assign(current.item, changes);
+    const menu = api.nativeToolbarActions(current)[0];
+    assert.equal(menu.type, 'menu');
+    assert.equal(menu.disabled, false, 'The reason remains reachable even when choosing a method is blocked.');
+    const methods = menu.children.filter(node => node.action?.startsWith('pr-merge:'));
+    assert.equal(methods.length, 3);
+    assert.ok(methods.every(node => node.disabled === true));
+    assert.match(text([menu]), reason);
+    assert.equal(menu.children.some(node => node.action === 'pr-refresh'), refresh);
   }
 });
 

@@ -12,13 +12,15 @@ const pull = issue(1, 'The actual PR title', { repository_url: 'https://api.gith
   labels: [{ name: 'bug' }], milestone: { title: 'Next release', html_url: 'https://github.com/team/project/milestone/2' },
   created_at: '2026-10-15T00:00:00Z', author_association: 'MEMBER' });
 function currentHost(options = {}) {
-  return fixture({ saved: connection, supportsDetailAside: true, ...options,
+  const { repositoryData = {}, pullData = {}, ...hostOptions } = options;
+  const currentPull = { ...pull, ...pullData };
+  return fixture({ saved: connection, supportsDetailAside: true, ...hostOptions,
     ownerAvatarRoute: async () => ({ status: 200, headers: { 'content-type': 'image/png' }, bodyBase64: image }), route: async url => {
       if (url.pathname === '/user') return body({ login: 'viewer' });
       if (url.pathname === '/user/repos') return body([repo('team/project')]);
-      if (url.pathname === '/search/issues') return searchBody([pull]);
-      if (url.pathname === '/repos/team/project/pulls/1') return body(pull);
-      if (url.pathname === '/repos/team/project') return body({ ...repo('team/project'), permissions: { push: true }, allow_merge_commit: true });
+      if (url.pathname === '/search/issues') return searchBody([currentPull]);
+      if (url.pathname === '/repos/team/project/pulls/1') return body(currentPull);
+      if (url.pathname === '/repos/team/project') return body({ ...repo('team/project'), permissions: { push: true }, allow_merge_commit: true, ...repositoryData });
       if (url.pathname.endsWith('/check-runs')) return body({ check_runs: [{ id: 1, name: 'build', head_sha: sha, status: 'completed', conclusion: 'success' }] });
       if (url.pathname.endsWith('/status')) return body({ statuses: [] });
       if (url.pathname.endsWith('/actions/runs')) return body({ workflow_runs: [] });
@@ -68,16 +70,65 @@ test('Detail tabs and merge actions remain available after context cleanup and p
   assert.equal(discussion.children[1].items[0].id, 'pr-context-aside');
   const detailNodes = discussion.children[1].children.flatMap(nodes);
   assert.ok(detailNodes.some(node => node.action === 'pr-tab:checks'));
-  const mergeAction = nodes(discussion.children[1].children[0]).find(node => node.action === 'pr-toggle-merge');
-  assert.ok(mergeAction, 'The real toolbar retains merge access after removing the context status');
-  assert.equal(mergeAction.disabled, false);
+  const mergeMenu = nodes(discussion.children[1].children[0]).find(node => node.id === 'pr-merge-menu');
+  assert.equal(mergeMenu?.type, 'menu', 'The real toolbar directly offers the enabled merge methods.');
+  assert.equal(mergeMenu.text, 'Merge');
+  assert.equal(mergeMenu.disabled, false);
+  assert.deepEqual(Array.from(mergeMenu.children.filter(node => node.action?.startsWith('pr-merge:')), node => node.action), ['pr-merge:merge']);
+  assert.ok(!nodes(discussion.children[1].children[0]).some(node => node.action === 'pr-toggle-merge'));
   assert.ok(detailNodes.some(node => node.action === 'pr-comment'));
   assert.equal(nodes(discussion).find(node => node.type === 'textEditor').value, 'Keep my draft.');
-  const merge = await f.render({ action: mergeAction.action });
+  const merge = await f.render({ action: mergeMenu.children.find(node => node.action === 'pr-merge:merge').action });
   assert.ok(nodes(merge).some(node => node.id === 'pr-merge-options'));
-  assert.ok(nodes(merge).some(node => node.action === 'pr-merge:merge'));
-  assert.ok(!nodes(merge).some(node => node.action === 'pr-confirm-merge'));
+  assert.ok(nodes(merge).some(node => node.action === 'pr-confirm-merge' && !node.disabled));
+  assert.ok(nodes(merge).some(node => node.text === 'Merge commit · team/project #1'));
+  assert.equal(nodes(merge).find(node => node.type === 'textEditor').value, 'Keep my draft.');
   assert.ok(f.requests.every(request => !request.method || request.method === 'GET'));
+});
+
+test('Each toolbar merge method prepares its own confirmation without sending a write or losing the comment draft', async () => {
+  const f = currentHost({ repositoryData: { allow_merge_commit: true, allow_squash_merge: true, allow_rebase_merge: true } });
+  const initial = await open(f), field = nodes(initial).find(node => node.type === 'textEditor').id;
+  const menu = nodes(initial.children[1].children[0]).find(node => node.id === 'pr-merge-menu');
+  assert.deepEqual(Array.from(menu.children.filter(node => node.action?.startsWith('pr-merge:')), node => node.action),
+    ['pr-merge:merge', 'pr-merge:squash', 'pr-merge:rebase']);
+  const draft = 'An unfinished reply.\nKeep both lines while choosing a merge method.';
+  for (const [method, label] of [['merge', 'Merge commit'], ['squash', 'Squash and merge'], ['rebase', 'Rebase and merge']]) {
+    const prepared = await f.render({ action: `pr-merge:${method}`, values: { [field]: draft } });
+    const confirmation = nodes(prepared).find(node => node.id === 'pr-merge-options');
+    assert.ok(confirmation);
+    assert.ok(nodes(confirmation).some(node => node.text === `${label} · team/project #1`));
+    assert.ok(nodes(confirmation).some(node => node.action === 'pr-confirm-merge' && !node.disabled));
+    assert.ok(nodes(confirmation).some(node => node.text?.includes(`${sha.slice(0, 12)} into main`)));
+    assert.equal(nodes(prepared).find(node => node.type === 'textEditor').value, draft);
+    assert.ok(f.requests.every(request => !request.method || request.method === 'GET'));
+    const canceled = await f.render({ action: 'pr-cancel-merge' });
+    assert.ok(!nodes(canceled).some(node => node.action === 'pr-confirm-merge'));
+    assert.equal(nodes(canceled).find(node => node.type === 'textEditor').value, draft);
+  }
+  assert.equal(f.writes.length, 0);
+  assert.equal(f.drafts.length, 0);
+});
+
+test('The shipped SDK keeps blocked merge methods visible and offers refresh while GitHub calculates readiness', async () => {
+  for (const [pullData, reason, refresh] of [
+    [{ mergeable: false, mergeable_state: 'dirty' }, /conflict/i, false],
+    [{ mergeable: true, mergeable_state: 'blocked' }, /rules.*block/i, false],
+    [{ mergeable: true, mergeable_state: 'behind' }, /source branch/i, false],
+    [{ mergeable: null, mergeable_state: 'unknown' }, /calculating merge status/i, true],
+  ]) {
+    const f = currentHost({ pullData }), page = await open(f);
+    const menu = nodes(page.children[1].children[0]).find(node => node.id === 'pr-merge-menu');
+    assert.equal(menu?.type, 'menu');
+    assert.equal(menu.disabled, false);
+    const methods = menu.children.filter(node => node.action?.startsWith('pr-merge:'));
+    assert.equal(methods.length, 1);
+    assert.equal(methods[0].disabled, true);
+    assert.match(nodes(menu).map(node => node.text || '').join('\n'), reason);
+    assert.equal(menu.children.some(node => node.action === 'pr-refresh'), refresh);
+    assert.ok(!nodes(page).some(node => node.action === 'pr-confirm-merge'));
+    assert.ok(f.requests.every(request => !request.method || request.method === 'GET'));
+  }
 });
 
 test('A host without the context capability keeps its previous discussion layout even with the new plugin', async () => {

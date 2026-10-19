@@ -124,7 +124,7 @@ test('Actual SDK accepts the top summary and keeps it on all tabs without losing
     assertSummary(nodes(page).find(node => node.id === 'pr-tabs'));
     assert.equal(nodes(page).find(node => node.id === 'pr-tab-files').subtitle, '45');
     assert.equal(nodes(page).find(node => node.id === `pr-tab-${tab}`).value, 'selected');
-    assert.ok(nodes(page).some(node => node.action === 'pr-toggle-merge'));
+    assert.ok(nodes(page).some(node => node.id === 'pr-merge-menu' && node.type === 'menu'));
     assert.ok(!nodes(page).some(node => /^pr-aside-(changes|comments|checks|merge)$/.test(node.id || '')));
     if (tab === 'discussion') {
       assert.equal(nodes(page).find(node => node.type === 'textEditor').value, 'Keep this unfinished reply.');

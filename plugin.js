@@ -850,6 +850,27 @@
       }
       return result;
     }
+    const mergeMethods = [
+      ['merge', 'allow_merge_commit', t('Merge commit', '合并提交')],
+      ['squash', 'allow_squash_merge', t('Squash and merge', '压缩并合并')],
+      ['rebase', 'allow_rebase_merge', t('Rebase and merge', '变基并合并')],
+    ];
+    const noMergeMethods = t('No merge method is explicitly enabled for this repository.', '仓库没有明确启用可用的合并方式。');
+    function mergeAvailability(model) {
+      const item = model.item || {}, repo = repository(model);
+      let problem = null;
+      if (item.mergeable === false || item.mergeable_state === 'dirty') problem = {
+        text: t('Resolve merge conflicts before merging.', '解决合并冲突后才能合并。'), tone: 'danger', symbol: 'exclamationmark.triangle',
+      };
+      else if (item.mergeable_state === 'blocked' || item.mergeable_state === 'behind') problem = {
+        text: item.mergeable_state === 'blocked' ? t('Repository rules currently block merging.', '仓库规则暂时阻止合并。')
+          : t('Update the source branch before merging.', '更新来源分支后再合并。'), tone: 'warning', symbol: 'lock', requirements: true,
+      };
+      else if (item.mergeable !== true || item.mergeable_state === 'unknown') problem = {
+        text: t('GitHub is calculating merge status. Refresh to check again.', 'GitHub 正在计算合并状态，刷新后再确认。'), tone: 'muted', refresh: true,
+      };
+      return { methods: mergeMethods.filter(([, field]) => repo[field] === true), problem };
+    }
     function mergeActions(model) {
       const item = model.item || {}, merge = model.merge || {}, repo = repository(model), repoState = section(model, 'repository');
       const result = [text(t('Merge', '合并'), 'headline', 'neutral')];
@@ -860,7 +881,7 @@
       if (item.draft) { result.push(badge(t('A draft must be marked ready for review before merging.', '草稿需要标记为可以审查后才能合并。'), 'muted', 'circle.dashed')); return result; }
       if (repo.archived) { result.push(badge(t('An archived repository cannot be changed.', '仓库已归档，无法修改。'), 'muted', 'archivebox')); return result; }
       if (merge.pending) {
-        const method = { merge: t('Merge commit', '合并提交'), squash: t('Squash and merge', '压缩并合并'), rebase: t('Rebase and merge', '变基并合并') }[merge.pending.method] || merge.pending.method;
+        const method = mergeMethods.find(([method]) => method === merge.pending.method)?.[2] || merge.pending.method;
         result.push(badge(t('Confirm merge', '确认合并'), 'warning', 'arrow.triangle.merge'), text(t(`${method} · ${merge.pending.repo} #${merge.pending.number}`, `${method} · ${merge.pending.repo} #${merge.pending.number}`), 'body', 'neutral'),
           text(t(`This will merge commit ${short(merge.pending.sha, 12)} into ${item.base?.ref || 'the target branch'}.`, `将提交 ${short(merge.pending.sha, 12)} 合并到 ${item.base?.ref || '目标分支'}。`)),
           row([button(t('Cancel', '取消'), 'pr-cancel-merge', { disabled: !!merge.busy }), button(merge.busy ? t('Merging…', '正在合并…') : t('Confirm merge', '确认合并'), 'pr-confirm-merge', { appearance: 'primary', symbol: 'arrow.triangle.merge', disabled: !!merge.busy })]));
@@ -872,12 +893,16 @@
         result.push(text(t('Merge permission is unavailable for this account or connection.', '当前账号或连接尚未获得合并权限。')), button(t('Manage repository access', '管理仓库访问权限'), 'manage', { symbol: 'folder.badge.gearshape' }), open(model, t('View merge options on GitHub', '在 GitHub 查看合并选项'), prURL(model)));
         return result;
       }
-      if (item.mergeable === false || item.mergeable_state === 'dirty') { result.push(badge(t('Resolve merge conflicts before merging.', '解决合并冲突后才能合并。'), 'danger', 'exclamationmark.triangle')); return result; }
-      if (item.mergeable_state === 'blocked' || item.mergeable_state === 'behind') { result.push(badge(item.mergeable_state === 'blocked' ? t('Repository rules currently block merging.', '仓库规则暂时阻止合并。') : t('Update the source branch before merging.', '更新来源分支后再合并。'), 'warning', 'lock'), open(model, t('View merge requirements on GitHub', '在 GitHub 查看合并要求'), prURL(model))); return result; }
-      if (item.mergeable === null || item.mergeable === undefined || item.mergeable_state === 'unknown') { result.push(text(t('GitHub is calculating merge status. Refresh to check again.', 'GitHub 正在计算合并状态，刷新后再确认。')), button(t('Refresh status', '刷新状态'), 'pr-refresh', { symbol: 'arrow.clockwise' })); return result; }
-      const methods = [['merge', 'allow_merge_commit', t('Merge commit', '合并提交')], ['squash', 'allow_squash_merge', t('Squash and merge', '压缩并合并')], ['rebase', 'allow_rebase_merge', t('Rebase and merge', '变基并合并')]].filter(([, field]) => repo[field] === true);
-      if (methods.length) result.push(row(methods.map(([method, , label]) => button(label, `pr-merge:${method}`, { appearance: 'secondary', symbol: 'arrow.triangle.merge', disabled: !!merge.busy }))));
-      else result.push(text(t('No merge method is explicitly enabled for this repository.', '仓库没有明确启用可用的合并方式。')), open(model, t('View merge options on GitHub', '在 GitHub 查看合并选项'), prURL(model)));
+      const { methods, problem } = mergeAvailability(model);
+      if (problem) {
+        result.push(problem.refresh ? text(problem.text) : badge(problem.text, problem.tone, problem.symbol));
+        if (problem.refresh) result.push(button(t('Refresh status', '刷新状态'), 'pr-refresh', { symbol: 'arrow.clockwise', disabled: !!merge.busy }));
+        else if (problem.requirements) result.push(open(model, t('View merge requirements on GitHub', '在 GitHub 查看合并要求'), prURL(model)));
+        return result;
+      }
+      if (methods.length) {
+        if (!referenceLayout) result.push(row(methods.map(([method, , label]) => button(label, `pr-merge:${method}`, { appearance: 'secondary', symbol: 'arrow.triangle.merge', disabled: !!merge.busy }))));
+      } else result.push(text(noMergeMethods), open(model, t('View merge options on GitHub', '在 GitHub 查看合并选项'), prURL(model)));
       result.push(text(t('GitHub will enforce repository rules, checks, and the current commit when you confirm.', '确认时，GitHub 会检查仓库规则、检查结果以及当前提交。')));
       return result;
     }
@@ -886,7 +911,13 @@
       const item = model.item || {}, repo = repository(model), repoState = section(model, 'repository');
       if (!referenceLayout || item.state !== 'open' || item.draft || merged(item)
         || !repoState.loaded || repoState.loading || repoState.error || repo.archived || repo.permissions?.push !== true) return [];
-      return [button(t('Merge…', '合并…'), 'pr-toggle-merge', { symbol: 'arrow.triangle.merge', disabled: !!model.merge?.busy })];
+      const { methods, problem } = mergeAvailability(model), busy = !!model.merge?.busy;
+      const children = [];
+      if (problem) children.push(text(problem.text, 'caption', problem.tone), node('divider'));
+      children.push(...methods.map(([method, , label]) => button(label, `pr-merge:${method}`, { disabled: busy || !!problem })));
+      if (!methods.length) children.push(text(noMergeMethods));
+      if (problem?.refresh) children.push(node('divider'), button(t('Refresh status', '刷新状态'), 'pr-refresh', { symbol: 'arrow.clockwise', disabled: busy }));
+      return [node('menu', { id: 'pr-merge-menu', text: t('Merge', '合并'), symbol: 'chevron.down', disabled: busy }, children)];
     }
     const nativeRow = (title, subtitle = '', properties = {}, children = []) => {
       const { value, ...rest } = properties;
@@ -2576,7 +2607,10 @@
         if (pullDetails.current) pullDetails.current.mergeExpanded = true;
         await pullDetails.confirmMerge({ authorized: typeof event.actionCapability === 'string' && !!event.actionCapability.trim() });
       }
-      else if (action === 'pr-cancel-merge') pullDetails.cancelMerge();
+      else if (action === 'pr-cancel-merge') {
+        const record = pullDetails.current;
+        if (record && !record.merge.busy) { pullDetails.cancelMerge(); record.mergeExpanded = false; }
+      }
       else if (action?.startsWith('pr-open:')) await web(decodeURIComponent(action.slice(8)));
       else if (action === 'handoff-item') {
         if (!await nora.chat.openDraft(draftForSelectedItem(), event)) throw new Error(t('Nora could not open this draft. Try again.', 'Nora 暂时无法打开草稿，请重试。'));
