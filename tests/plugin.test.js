@@ -613,7 +613,7 @@ test('Oversized Unicode Issue descriptions remain fully readable inside Nora wit
 });
 
 test('A native workspace lists issues in its sidebar and opens full details directly in its main area', async () => {
-  const f = fixture({ saved: connection, now: () => Date.parse('2026-10-12T00:00:00Z'), route: async url => {
+  const f = fixture({ saved: connection, supportsNavigationItemIcon: true, now: () => Date.parse('2026-10-12T00:00:00Z'), route: async url => {
     if (url.pathname === '/user') return body({ login: 'alice' });
     if (url.pathname === '/user/repos') return body([repo()]);
     return itemResponse(url, [issue(1, 'Fix the editor', { updated_at: '2026-10-10T10:00:00Z', labels: [{ name: 'bug' }], body: '## Details\nA real description.' })]);
@@ -628,6 +628,8 @@ test('A native workspace lists issues in its sidebar and opens full details dire
   const viewNavigation = nodes(sidebar).find(node => node.id === 'view-navigation');
   assert.equal(viewNavigation.value, 'view-issues');
   assert.deepEqual(Array.from(viewNavigation.items, item => item.action), ['kind:issues', 'kind:pulls']);
+  assert.match(viewNavigation.items[0].iconSVG, /M8\.5 7\.5/);
+  assert.equal(viewNavigation.items[1].iconSVG, undefined);
   const item = sidebar.items[0];
   assert.equal(item.type, 'navigationItem');
   assert.equal(item.id, 'item-alice/project/1');
