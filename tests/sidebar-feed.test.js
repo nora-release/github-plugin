@@ -22,7 +22,7 @@ function feedFixture(route) {
 test('Connected overview searches only personal Issues without selecting or fetching the first repository', async () => {
   const f = feedFixture(async url => {
     assert.equal(url.pathname, '/search/issues');
-    assert.deepEqual(Object.fromEntries(url.searchParams), { q: 'is:issue state:open involves:alice', sort: 'updated', order: 'desc', per_page: '50', page: '1', advanced_search: 'true' });
+    assert.deepEqual(Object.fromEntries(url.searchParams), { q: 'is:issue state:open archived:false involves:alice', sort: 'updated', order: 'desc', per_page: '50', page: '1', advanced_search: 'true' });
     return searchBody([feedItem('team/second', 17, 'Team issue')]);
   });
   const view = await f.renderReady({});
@@ -85,10 +85,10 @@ test('Personal queries exclude unrelated public repository activity and include 
     assert.equal(url.pathname, '/search/issues', 'Public access must not trigger the broad /issues or repository-list endpoints.');
     const query = url.searchParams.get('q');
     if (query.startsWith('is:issue ')) {
-      assert.equal(query, 'is:issue state:open involves:alice');
+      assert.equal(query, 'is:issue state:open archived:false involves:alice');
       return searchBody([]);
     }
-    assert.equal(query, 'is:pull-request state:open (involves:alice OR review-involves:alice)');
+    assert.equal(query, 'is:pull-request state:open archived:false (involves:alice OR review-involves:alice)');
     return searchBody([relevant]);
   } });
   assert.deepEqual(itemActions(await f.renderReady({})), []);
@@ -122,16 +122,16 @@ test('Open personal scope survives pagination, repository selection, legacy stat
   await f.render({ action: 'repository', value: '' });
   await f.render({ action: 'kind:issues' });
   assert.deepEqual(queries, [
-    { query: 'is:issue state:open involves:alice', page: '1' },
-    { query: 'is:issue state:open involves:alice', page: '2' },
-    { query: 'is:issue state:open repo:team/second involves:alice', page: '1' },
-    { query: 'is:issue state:open repo:team/second involves:alice', page: '1' },
-    { query: 'is:pull-request state:open repo:team/second (involves:alice OR review-involves:alice)', page: '1' },
-    { query: 'is:pull-request state:open repo:team/second (involves:alice OR review-involves:alice)', page: '2' },
-    { query: 'is:pull-request state:open repo:team/second (involves:alice OR review-involves:alice)', page: '1' },
-    { query: 'is:pull-request state:open repo:team/second (involves:alice OR review-involves:alice)', page: '1' },
-    { query: 'is:pull-request state:open (involves:alice OR review-involves:alice)', page: '1' },
-    { query: 'is:issue state:open involves:alice', page: '1' },
+    { query: 'is:issue state:open archived:false involves:alice', page: '1' },
+    { query: 'is:issue state:open archived:false involves:alice', page: '2' },
+    { query: 'is:issue state:open archived:false repo:team/second involves:alice', page: '1' },
+    { query: 'is:issue state:open archived:false repo:team/second involves:alice', page: '1' },
+    { query: 'is:pull-request state:open archived:false repo:team/second (involves:alice OR review-involves:alice)', page: '1' },
+    { query: 'is:pull-request state:open archived:false repo:team/second (involves:alice OR review-involves:alice)', page: '2' },
+    { query: 'is:pull-request state:open archived:false repo:team/second (involves:alice OR review-involves:alice)', page: '1' },
+    { query: 'is:pull-request state:open archived:false repo:team/second (involves:alice OR review-involves:alice)', page: '1' },
+    { query: 'is:pull-request state:open archived:false (involves:alice OR review-involves:alice)', page: '1' },
+    { query: 'is:issue state:open archived:false involves:alice', page: '1' },
   ]);
 });
 
@@ -218,7 +218,7 @@ test('Unsafe account logins cannot inject search operators or issue an unscoped 
       if (url.pathname === '/user/repos') return body([]);
       assert.equal(url.pathname, '/search/issues');
       assert.equal(url.searchParams.get('advanced_search'), 'true');
-      assert.equal(url.searchParams.get('q'), `is:issue state:open involves:${login}`);
+      assert.equal(url.searchParams.get('q'), `is:issue state:open archived:false involves:${login}`);
       return searchBody([]);
     } });
     await f.renderReady({});
@@ -413,7 +413,7 @@ test('Changing the connected account cannot restore an earlier account detail re
     if (url.pathname === '/user') return body({ login: isNew ? 'bob' : 'alice' });
     if (url.pathname === '/user/repos') return body([repo(isNew ? 'bob/project' : 'alice/project')]);
     if (url.pathname === '/search/issues') {
-      assert.equal(url.searchParams.get('q'), `is:issue state:open involves:${isNew ? 'bob' : 'alice'}`);
+      assert.equal(url.searchParams.get('q'), `is:issue state:open archived:false involves:${isNew ? 'bob' : 'alice'}`);
       assert.equal(url.searchParams.get('advanced_search'), 'true');
       return searchBody([isNew ? second : first]);
     }
@@ -515,6 +515,94 @@ test('The active feed excludes stale closed merged and missing-state search resu
   }
 });
 
+test('Issue and PR feeds reject archived target metadata while retaining active unknown and draft work', async () => {
+  for (const kind of ['issues', 'pulls']) {
+    const extra = kind === 'pulls' ? { pull_request: {} } : {};
+    const archived = feedItem('team/retired', 1, 'Archived repository snapshot', {
+      ...extra, repository: { full_name: 'TEAM/RETIRED', archived: true },
+    });
+    const archivedBase = feedItem('team/retired-base', 2, 'Archived target branch repository', {
+      ...extra, base: { repo: { full_name: 'TEAM/RETIRED-BASE', archived: true } },
+    });
+    const active = feedItem('team/active', 3, 'Active repository work', {
+      ...extra, repository: { full_name: 'team/active', archived: false },
+    });
+    const unknown = feedItem('team/unknown', 4, 'Repository metadata is not available', extra);
+    const draft = feedItem('team/draft', 5, 'Draft remains actionable', { ...extra, draft: true });
+    const archivedFork = feedItem('team/current', 6, 'Archived source fork is still reviewable', {
+      ...extra, head: { repo: { full_name: 'contributor/retired-fork', archived: true } },
+      base: { repo: { full_name: 'team/current', archived: false } },
+    });
+    const unrelatedBase = feedItem('team/current', 7, 'Unrelated archive metadata does not hide this target', {
+      ...extra, base: { repo: { full_name: 'outside/retired', archived: true } },
+    });
+    const f = feedFixture(async () => searchBody([archived, archivedBase, active, unknown, draft, archivedFork, unrelatedBase]));
+    let view = await f.renderReady({});
+    if (kind === 'pulls') view = await f.render({ action: 'kind:pulls' });
+    assert.deepEqual(itemActions(view), [
+      `item:${key('team/active', 3)}`, `item:${key('team/unknown', 4)}`, `item:${key('team/draft', 5)}`,
+      `item:${key('team/current', 6)}`, `item:${key('team/current', 7)}`,
+    ]);
+    assert.doesNotMatch(texts(view), /Archived repository snapshot|Archived target branch repository/);
+    const before = f.requests.length;
+    for (const [repository, number] of [['team/retired', 1], ['team/retired-base', 2]]) {
+      const stale = await f.renderReady({ action: `item:${key(repository, number)}` });
+      assert.ok(!stale.value);
+    }
+    assert.equal(f.requests.length, before);
+    assert.ok(apiRequests(f).every(request => ['/user', '/user/repos', '/search/issues'].includes(new URL(request.url).pathname)));
+  }
+});
+
+test('User repository archive flags apply case-insensitively when loaded initially or on a later repository page', async () => {
+  const first = feedItem('alice/project', 1, 'Initially archived work');
+  const later = feedItem('team/later', 2, 'Later discovered archive');
+  const active = feedItem('team/active', 3, 'Active repository');
+  const unknown = feedItem('outside/unknown', 4, 'Unknown repository');
+  const f = fixture({ saved: connection, route: async url => {
+    if (url.pathname === '/user') return body({ login: 'alice' });
+    if (url.pathname === '/user/repos') return url.searchParams.get('page') === '2'
+      ? body([{ ...repo('TEAM/LATER', 3), archived: true }])
+      : body([{ ...repo('ALICE/PROJECT'), archived: true }, { ...repo('team/active', 2), archived: false }], 200,
+        { Link: '<https://api.github.com/user/repos?page=2>; rel="next"' });
+    assert.equal(url.pathname, '/search/issues');
+    return searchBody([first, later, active, unknown]);
+  } });
+  const initial = await f.renderReady({});
+  assert.deepEqual(itemActions(initial), [`item:${key('team/later', 2)}`, `item:${key('team/active', 3)}`, `item:${key('outside/unknown', 4)}`]);
+  const loaded = await f.render({ action: 'more-repos' });
+  assert.deepEqual(itemActions(loaded), [`item:${key('team/active', 3)}`, `item:${key('outside/unknown', 4)}`]);
+  assert.doesNotMatch(texts(loaded), /Initially archived work|Later discovered archive/);
+  const before = f.requests.length;
+  const stale = await f.renderReady({ action: `item:${key('team/later', 2)}` });
+  assert.ok(!stale.value);
+  assert.equal(f.requests.length, before);
+  assert.equal(apiRequests(f).filter(request => new URL(request.url).pathname === '/search/issues').length, 1);
+  assert.ok(apiRequests(f).every(request => ['/user', '/user/repos', '/search/issues'].includes(new URL(request.url).pathname)));
+});
+
+test('A page containing only archived work retains pagination and reaches active personal work', async () => {
+  for (const kind of ['issues', 'pulls']) {
+    const extra = kind === 'pulls' ? { pull_request: {} } : {};
+    const f = feedFixture(async url => {
+      assert.match(url.searchParams.get('q'), /(?:^| )archived:false(?: |$)/);
+      return url.searchParams.get('page') === '2'
+        ? searchBody([feedItem('team/current', 3, 'Active on the next page', extra)])
+        : searchBody([feedItem('team/retired', 1, 'Archived search index entry', {
+          ...extra, repository: { full_name: 'team/retired', archived: true },
+        })], 200, { Link: '<https://api.github.com/search/issues?page=2>; rel="next"' });
+    });
+    let initial = await f.renderReady({});
+    if (kind === 'pulls') initial = await f.render({ action: 'kind:pulls' });
+    assert.deepEqual(itemActions(initial), []);
+    assert.equal(initial.children[0].loadMoreAction, 'more-items');
+    assert.ok(initial.children[0].loadMoreToken);
+    const next = await f.render({ action: 'more-items' });
+    assert.deepEqual(itemActions(next), [`item:${key('team/current', 3)}`]);
+    assert.equal(next.children[0].loadMoreAction, undefined);
+  }
+});
+
 test('A page containing only terminal work still allows scrolling to the next open personal result', async () => {
   const f = feedFixture(async url => {
     assert.match(url.searchParams.get('q'), /(?:^| )state:open(?: |$)/);
@@ -556,6 +644,44 @@ test('Refreshing a newly closed Issue keeps its detail and later stale open inde
   assert.deepEqual(itemActions(appended), [`item:${key('alice/project', 8)}`]);
   assert.match(texts(appended.children[1]), /Complete source remains readable/);
   assert.doesNotMatch(texts(appended), /Stale open copy from the search index/);
+  await f.render({ action: 'close-detail' });
+  const before = f.requests.length;
+  const stale = await f.renderReady({ action: `item:${key('team/second', 7)}` });
+  assert.equal(f.requests.length, before);
+  assert.ok(!stale.value);
+});
+
+test('An archived PR target discovered on refresh leaves readable details and stale later search results cannot restore its row', async () => {
+  let archived = false;
+  const item = feedItem('team/second', 7, 'Target archived remotely', { pull_request: {} });
+  const f = feedFixture(async url => {
+    if (url.pathname === '/search/issues') return url.searchParams.get('page') === '2'
+      ? searchBody([{ ...item, title: 'Stale open copy of archived target' }, feedItem('alice/project', 8, 'Another pending pull', { pull_request: {} })])
+      : searchBody([item], 200, { Link: '<https://api.github.com/search/issues?page=2>; rel="next"' });
+    if (url.pathname === '/repos/team/second/pulls/7') return body({ ...item, body: 'Complete archived PR remains readable',
+      base: { ref: 'main', repo: { full_name: 'TEAM/SECOND', archived } },
+    });
+    if (url.pathname === '/repos/team/second') return body({ ...repo('team/second'), archived });
+    if (url.pathname.endsWith('/check-runs')) return body({ check_runs: [] });
+    if (url.pathname.endsWith('/status')) return body({ state: 'pending', statuses: [] });
+    if (url.pathname.endsWith('/actions/runs')) return body({ workflow_runs: [] });
+    return body([]);
+  });
+  await f.renderReady({});
+  await f.render({ action: 'kind:pulls' });
+  const initial = await f.renderReady({ action: `item:${key('team/second', 7)}` });
+  assert.deepEqual(itemActions(initial), [`item:${key('team/second', 7)}`]);
+  archived = true;
+  const refreshed = await f.renderReady({ action: 'refresh-detail' });
+  assert.equal(refreshed.value, key('team/second', 7));
+  assert.equal(refreshed.children[0].value, '');
+  assert.deepEqual(itemActions(refreshed), []);
+  assert.match(texts(refreshed.children[1]), /Complete archived PR remains readable/);
+  const appended = await f.render({ action: 'more-items' });
+  assert.equal(appended.value, key('team/second', 7));
+  assert.deepEqual(itemActions(appended), [`item:${key('alice/project', 8)}`]);
+  assert.match(texts(appended.children[1]), /Complete archived PR remains readable/);
+  assert.doesNotMatch(texts(appended), /Stale open copy of archived target/);
   await f.render({ action: 'close-detail' });
   const before = f.requests.length;
   const stale = await f.renderReady({ action: `item:${key('team/second', 7)}` });

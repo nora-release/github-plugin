@@ -1,6 +1,6 @@
 {
   "name": "@nora/github-plugin",
-  "version": "0.10.23",
+  "version": "0.10.24",
   "private": true,
   "type": "module",
   "packageManager": "pnpm@11.5.3",

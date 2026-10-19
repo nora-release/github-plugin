@@ -1591,7 +1591,7 @@
   async function panelItems(repo, kind, p) {
     const login = state.user?.login;
     if (typeof login !== 'string' || !/^[A-Za-z0-9][A-Za-z0-9_-]{0,99}$/.test(login)) throw new Error(message.invalid);
-    const query = [kind === 'pulls' ? 'is:pull-request' : 'is:issue', 'state:open',
+    const query = [kind === 'pulls' ? 'is:pull-request' : 'is:issue', 'state:open', 'archived:false',
       ...(repo ? [`repo:${repository(repo)}`] : []),
       kind === 'pulls' ? `(involves:${login} OR review-involves:${login})` : `involves:${login}`].join(' ');
     // OR between qualifiers requires GitHub's advanced search mode.
@@ -1601,7 +1601,7 @@
         typeof data.incomplete_results !== 'boolean') throw new Error(message.invalid);
     if (data.incomplete_results) throw new Error(t('GitHub could not finish this search. Try again.', 'GitHub 未能完成此次查询，请重试。'));
     const items = data.items.map(item => normalizeItem(item, repo));
-    return { items: items.filter(item => isOpenItem(item) && Boolean(item.pull_request) === (kind === 'pulls')),
+    return { items: items.filter(item => isActionableItem(item) && Boolean(item.pull_request) === (kind === 'pulls')),
       nextPage: hasNext(result.headers) && p < 20 ? p + 1 : null };
   }
   function clearDetails() {
@@ -1668,7 +1668,7 @@
       const result = await panelItems(requestedRepo, requestedKind, requestedPage);
       if (current !== generation || revision !== itemRevision) return;
       state.page = requestedPage;
-      const completedKeys = new Set(append ? state.items.filter(item => !isOpenItem(item)).map(itemKey) : []);
+      const completedKeys = new Set(append ? state.items.filter(item => !isActionableItem(item)).map(itemKey) : []);
       const incoming = result.items.filter(item => !completedKeys.has(itemKey(item)));
       state.items = uniqueItems(append ? [...state.items, ...incoming] : incoming);
       state.moreItems = !!result.nextPage;
@@ -1976,12 +1976,15 @@
     if (!Number.isFinite(date.getTime())) return '';
     return date.toLocaleDateString(isChinese ? 'zh-CN' : 'en-US', { month: 'short', day: 'numeric', ...(date.getFullYear() === new Date(Date.now()).getFullYear() ? {} : { year: 'numeric' }) });
   }
-  function isOpenItem(item) {
-    return item.state === 'open' && !item.merged && !item.merged_at && !item.pull_request?.merged_at;
+  function isActionableItem(item) {
+    if (item.state !== 'open' || item.merged || item.merged_at || item.pull_request?.merged_at) return false;
+    const name = itemRepository(item).toLowerCase();
+    const archived = repo => repo?.archived === true && typeof repo.full_name === 'string' && repo.full_name.toLowerCase() === name;
+    return !archived(item.repository) && !archived(item.base?.repo) && !state.repos.some(archived);
   }
   function filteredItems() {
     const query = state.query.trim().toLowerCase();
-    return state.items.filter(item => isOpenItem(item) && (!query || `${itemRepository(item)} ${item.number} ${item.title} ${item.user?.login || ''}`.toLowerCase().includes(query))
+    return state.items.filter(item => isActionableItem(item) && (!query || `${itemRepository(item)} ${item.number} ${item.title} ${item.user?.login || ''}`.toLowerCase().includes(query))
       && (!state.author || item.user?.login === state.author) && (!state.label || itemLabels(item).includes(state.label)));
   }
   function clearHiddenSelection() {
@@ -2121,7 +2124,7 @@
       state.moreItems ? t('No matching items on the loaded pages. Scroll down to continue.', '已加载页面暂无匹配条目，下拉可继续加载。')
         : state.query || state.author || state.label ? t('No matching loaded items.', '已加载条目中没有匹配结果。')
           : state.kind === 'pulls' ? t('No pull requests in this view.', '当前范围暂无 PR。') : t('No Issues in this view.', '当前范围暂无 Issues。')));
-    return node('sidebar', { id: 'item-navigation', value: state.selected && state.detailsVisible && isOpenItem(state.selected) ? itemKey(state.selected) : '',
+    return node('sidebar', { id: 'item-navigation', value: state.selected && state.detailsVisible && isActionableItem(state.selected) ? itemKey(state.selected) : '',
       ...(state.moreItems && !state.itemsLoading && !state.itemLoadError && !reachedLimit && !hasLocalFilters
         ? { loadMoreAction: 'more-items', loadMoreToken: feedToken() } : {}),
       items: visibleItems.map((item, index) => {
@@ -2135,7 +2138,7 @@
   function filterMenu() {
     const choices = (selected, values) => [...new Set([selected, ...values.filter(value => typeof value === 'string' && value).sort()]
       .filter(Boolean))].slice(0, 32);
-    const openItems = state.items.filter(isOpenItem);
+    const openItems = state.items.filter(isActionableItem);
     const authors = choices(state.author, openItems.map(item => item.user?.login).map(value => short(value, 64)));
     const labels = choices(state.label, openItems.flatMap(itemLabels));
     const filterCount = Number(!!state.author) + Number(!!state.label);
