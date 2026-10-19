@@ -31,7 +31,7 @@ function host({ timeline = [], comments = [], commits = [], description = 'Origi
 async function open(f) {
   await f.renderReady();
   await f.render({ action: 'kind:pulls' });
-  return f.render({ action: 'item:item-team/project/1' });
+  return f.renderReady({ action: 'item:item-team/project/1' });
 }
 const list = (view, id = 'pr-conversation') => nodes(view).find(value => value.type === 'lazyColumn' && value.id === id);
 const history = view => nodes(view).filter(value => value.id?.startsWith('pr-activity-'));
@@ -194,7 +194,7 @@ test('Issue descriptions also render their full original document without manual
     return body([]);
   } });
   await f.renderReady();
-  const page = await f.render({ action: 'item:item-alice/project/1' });
+  const page = await f.renderReady({ action: 'item:item-alice/project/1' });
   const description = nodes(page).find(value => value.id === 'issue-description');
   assert.ok(description);
   const documents = nodes(description).filter(value => value.type === 'document');

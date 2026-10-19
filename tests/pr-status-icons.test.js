@@ -39,7 +39,7 @@ for (const [kind, extra, label, tone, symbol] of [
     const f = fixture({ saved: connection, route: async url => basics(url) || (url.pathname === '/search/issues' ? searchBody([pull(7, kind === 'closed' ? {} : extra)]) : body(item)) });
     await f.renderReady({});
     const overview = await f.render({ action: 'kind:pulls' });
-    const selected = await f.render({ action: 'item:item-alice/project/7' });
+    const selected = await f.renderReady({ action: 'item:item-alice/project/7' });
     assertHeading(selected, item, 'PR', label);
     const badges = kind === 'closed' ? [detailBadge(selected)] : [overview.children[0].items[0].children[0], selected.children[0].items[0].children[0], detailBadge(selected)];
     if (kind === 'closed') {
@@ -63,7 +63,7 @@ test('PRs discovered merged leave the sidebar and retain the exact merged SVG ah
     const f = fixture({ saved: connection, route: async url => basics(url) || (url.pathname === '/search/issues' ? searchBody([pull(7, { draft: true })]) : body(item)) });
     await f.renderReady({});
     const overview = await f.render({ action: 'kind:pulls' });
-    const selected = await f.render({ action: 'item:item-alice/project/7' });
+    const selected = await f.renderReady({ action: 'item:item-alice/project/7' });
     assertHeading(selected, item, 'PR', 'Merged');
     assert.equal(overview.children[0].items[0].children[0].text, 'Draft');
     assert.equal(selected.children[0].items.length, 0);
@@ -97,7 +97,7 @@ test('Merged status remains in the heading and legacy readiness views without a 
         return body([]);
       } });
     await f.renderReady({}); await f.render({ action: 'kind:pulls' });
-    const selected = await f.render({ action: 'item:item-alice/project/7' });
+    const selected = await f.renderReady({ action: 'item:item-alice/project/7' });
     assert.equal(selected.children[0].items.length, 0);
     for (const badge of [detailBadge(selected)]) {
       assert.equal(badge.text, 'Merged');
@@ -129,7 +129,7 @@ test('Issue badges retain their semantic circles without any PR SVG', async () =
     const item = issue(7, 'Issue 7', { state });
     const f = fixture({ saved: connection, route: async url => basics(url) || (url.pathname === '/search/issues' ? searchBody([issue(7, 'Issue 7')]) : body(item)) });
     const overview = await f.renderReady({});
-    const selected = await f.render({ action: 'item:item-alice/project/7' });
+    const selected = await f.renderReady({ action: 'item:item-alice/project/7' });
     assertHeading(selected, item, 'Issue', state === 'open' ? 'Open' : 'Closed');
     const badges = state === 'open' ? [overview.children[0].items[0].children[0], detailBadge(selected)] : [detailBadge(selected)];
     if (state === 'closed') assert.equal(selected.children[0].items.length, 0);
@@ -149,7 +149,7 @@ test('A full draft PR detail updates the sidebar from the open SVG to the draft 
   await f.renderReady({});
   const overview = await f.render({ action: 'kind:pulls' });
   assert.equal(overview.children[0].items[0].children[0].iconSVG, expectedIcons.open);
-  const selected = await f.render({ action: 'item:item-alice/project/7' });
+  const selected = await f.renderReady({ action: 'item:item-alice/project/7' });
   assert.equal(selected.children[0].items[0].children[0].iconSVG, expectedIcons.draft);
   assert.equal(detailBadge(selected).iconSVG, expectedIcons.draft);
   assert.equal(selected.children[0].items[0].id, overview.children[0].items[0].id);
@@ -161,7 +161,7 @@ test('Long Unicode PR and Issue titles stay bounded while their status and numbe
     const f = fixture({ saved: connection, route: async url => basics(url) || (url.pathname === '/search/issues' ? searchBody([item]) : body(item)) });
     await f.renderReady({});
     if (kind === 'pulls') await f.render({ action: 'kind:pulls' });
-    const selected = await f.render({ action: 'item:item-alice/project/987654' });
+    const selected = await f.renderReady({ action: 'item:item-alice/project/987654' });
     const heading = detailHeading(selected), [status, title, number] = heading.children;
     assert.equal(heading.type, 'row');
     assert.equal(status.text, 'Open');
@@ -183,7 +183,7 @@ test('Hosts without native detail support retain the previous standalone title a
       route: async url => basics(url) || (url.pathname === '/search/issues' ? searchBody([item]) : body(item)) });
     await f.renderReady({});
     if (kind === 'pulls') await f.render({ action: 'kind:pulls' });
-    const selected = await f.render({ action: 'item:item-alice/project/42' }), detail = selected.children[1];
+    const selected = await f.renderReady({ action: 'item:item-alice/project/42' }), detail = selected.children[1];
     assert.equal(detail.type, 'column');
     assert.equal(detail.children[1].children[0].type, 'text');
     assert.equal(detail.children[1].children[0].text, item.title);

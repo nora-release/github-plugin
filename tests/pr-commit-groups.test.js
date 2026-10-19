@@ -251,7 +251,7 @@ test('Actual SDK toggle, avatar render, paginated grouping and delayed same-head
       return body([]);
     } });
   await f.renderReady({}); await f.render({ action: 'kind:pulls' });
-  let page = await f.render({ action: 'item:item-team/project/1' }), group = groups([page])[0];
+  let page = await f.renderReady({ action: 'item:item-team/project/1' }), group = groups([page])[0];
   assert.equal(group.children[0].text, '2 commits', 'Repeated timeline source IDs must not erase distinct SHA records');
   const field = nodes(page).find(value => value.type === 'textEditor').id;
   page = await f.render({ action: group.children[0].action, values: { [field]: 'Draft across collection actions.' } });
@@ -268,12 +268,12 @@ test('Actual SDK toggle, avatar render, paginated grouping and delayed same-head
   assert.ok(nodes(loading).some(value => value.type === 'progress' || value.id?.startsWith('pr-commit-group-')
     || value.action === 'pr-discussion-load' && value.disabled && value.text === 'Loading activity…'));
   delay.release.resolve(); await refresh; delay = null;
-  page = await f.render({}); group = groups([page])[0];
+  page = await f.renderReady({}); group = groups([page])[0];
   assert.equal(group.children[0].text, '2 commits'); assert.equal(group.children.length, 3, 'Same-head refresh keeps expansion while the timeline is incomplete');
   assert.equal(nodes(page).find(value => value.type === 'textEditor').value, 'Draft across collection actions.');
-  head = sha(1001); page = await f.render({ action: 'pr-refresh' });
+  head = sha(1001); page = await f.renderReady({ action: 'pr-refresh' });
   assert.equal(groups([page])[0].children.length, 1, 'A new head resets expansion');
   page = await f.render({ action: groups([page])[0].children[0].action }); assert.equal(groups([page])[0].children.length, 3);
-  page = await f.render({ action: 'item:item-team/project/2' }); assert.equal(groups([page])[0].children.length, 1, 'Another PR starts collapsed');
+  page = await f.renderReady({ action: 'item:item-team/project/2' }); assert.equal(groups([page])[0].children.length, 1, 'Another PR starts collapsed');
   assert.ok(f.requests.every(request => !request.method || request.method === 'GET'));
 });

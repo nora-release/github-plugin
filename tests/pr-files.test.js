@@ -25,7 +25,7 @@ function routeFor(files, override = () => undefined) {
 }
 async function openFiles(f, number = 1) {
   await f.renderReady({}); await f.render({ action: 'kind:pulls' });
-  await f.render({ action: `item:item-alice/project/${number}` });
+  await f.renderReady({ action: `item:item-alice/project/${number}` });
   return f.render({ action: 'pr-tab:files' });
 }
 const split = current => nodes(current).find(node => node.id === 'pr-file-workspace');
@@ -63,7 +63,7 @@ test('Filename identity survives refresh reordering and missing old-host diff su
   const f = fixture({ saved: connection, route: routeFor(() => files) });
   await openFiles(f); await f.render({ action: 'pr-file:1' });
   files = [files[1], files[0]];
-  const refreshed = await f.render({ action: 'refresh-detail' });
+  const refreshed = await f.renderReady({ action: 'refresh-detail' });
   assert.equal(nodes(refreshed).find(node => node.type === 'diff').subtitle, 'src/second.swift');
   assert.ok(nodes(split(refreshed).children[0]).some(node => node.action === 'pr-file:0' && node.value === 'selected'));
   assert.equal(split(refreshed).value, 'detail');
@@ -84,7 +84,7 @@ test('File API pages remain lazy and retain the selected filename while appendin
     return url.searchParams.get('page') === '1'
       ? body([first], 200, { link: '<https://api.github.com/repos/alice/project/pulls/1/files?page=2>; rel="next"' }) : body([second]);
   }) });
-  await f.renderReady({}); await f.render({ action: 'kind:pulls' }); await f.render({ action: 'item:item-alice/project/1' });
+  await f.renderReady({}); await f.render({ action: 'kind:pulls' }); await f.renderReady({ action: 'item:item-alice/project/1' });
   assert.ok(!f.requests.some(request => new URL(request.url).pathname.endsWith('/files')));
   let current = await f.render({ action: 'pr-tab:files' });
   assert.ok(nodes(current).some(node => node.action === 'pr-more:files'));
@@ -115,7 +115,7 @@ test('A full PR feed and 200 long file names keep both selected tails and the or
   }) });
   await f.renderReady({}); await f.render({ action: 'kind:pulls' });
   for (let page = 2; page <= 8; page++) await f.render({ action: 'more-items' });
-  await f.render({ action: 'item:item-alice/project/400' }); await f.render({ action: 'pr-tab:files' });
+  await f.renderReady({ action: 'item:item-alice/project/400' }); await f.render({ action: 'pr-tab:files' });
   for (let page = 2; page <= 7; page++) await f.render({ action: 'pr-more:files' });
   const current = await f.render({ action: 'pr-file:199' });
   const normalized = value => ({ ...value, options: value.options || [], disabled: value.disabled || false,

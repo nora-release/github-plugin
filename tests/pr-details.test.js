@@ -537,7 +537,7 @@ test('Nora context includes CI, reviews, comments and activity without replacing
 
 async function openFixturePR(f) {
   await f.renderReady({}); await f.render({ action: 'kind:pulls' });
-  return f.render({ action: 'item:item-alice/project/1' });
+  return f.renderReady({ action: 'item:item-alice/project/1' });
 }
 function fixtureRoute({ mutation = async () => assert.fail('Unexpected mutation'), detail = () => pull() } = {}) {
   return async (url, args) => {
@@ -608,7 +608,7 @@ test('A full PR feed with large discussion and typed draft stays within native w
   } });
   await f.renderReady({}); await f.render({ action: 'kind:pulls' });
   for (let page = 2; page <= 8; page++) await f.render({ action: 'more-items' });
-  const selected = await f.render({ action: 'item:item-alice/project/400' });
+  const selected = await f.renderReady({ action: 'item:item-alice/project/400' });
   const editor = nodes(selected).find(node => node.type === 'textEditor' && node.id.startsWith('pr-comment-'));
   assert.ok(editor);
   let workspace = await f.render({ action: 'pr-tab:discussion', values: { [editor.id]: draft } });
@@ -746,7 +746,7 @@ test('A late automatic workflow load cannot replace the selected workflow of a d
   await openFixturePR(f);
   const old = f.render({ action: 'pr-tab:checks' });
   await started.promise;
-  await f.render({ action: 'item:item-alice/project/2' });
+  await f.renderReady({ action: 'item:item-alice/project/2' });
   await f.render({ action: 'pr-tab:checks' });
   await f.render({ action: 'pr-jobs:84' });
   release.resolve();

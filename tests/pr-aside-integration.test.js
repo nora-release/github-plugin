@@ -29,7 +29,7 @@ function currentHost(options = {}) {
 }
 async function open(f) {
   await f.renderReady({}); await f.render({ action: 'kind:pulls' });
-  return f.render({ action: 'item:item-team/project/1' });
+  return f.renderReady({ action: 'item:item-team/project/1' });
 }
 
 test('The shipped SDK accepts the original comment card and loads reviewer and assignee avatars from the context column', async () => {

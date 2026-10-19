@@ -41,7 +41,7 @@ const commitRows = page => group(page)?.children.filter(node => node.type === 't
 async function open(f) {
   await f.renderReady({});
   await f.render({ action: 'kind:pulls' });
-  return f.render({ action: 'item:item-team/project/1' });
+  return f.renderReady({ action: 'item:item-team/project/1' });
 }
 async function painted(f) {
   await new Promise(resolve => setImmediate(resolve));

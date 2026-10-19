@@ -300,10 +300,10 @@ test('Issues exclude PRs and the active PR view keeps drafts while excluding mer
   assert.match(texts(view.children[0]), /Work in progress/);
   assert.doesNotMatch(texts(view.children[0]), /Finished/);
   assert.doesNotMatch(texts(view.children[0]), /Real issue/);
-  const draft = await f.render({ action: 'item:item-alice/project/3' });
+  const draft = await f.renderReady({ action: 'item:item-alice/project/3' });
   assert.match(texts(draft.children[1]), /Draft/);
   const requests = f.requests.length;
-  const unchanged = await f.render({ action: 'item:item-alice/project/4' });
+  const unchanged = await f.renderReady({ action: 'item:item-alice/project/4' });
   assert.equal(f.requests.length, requests, 'A removed merged row cannot be reopened by an old sidebar action');
   assert.ok(!unchanged.value);
   assert.ok(!nodes(unchanged).some(node => node.id === 'item-details'));
@@ -333,7 +333,7 @@ test('Local filters avoid requests and opening an issue retrieves its full descr
   assert.doesNotMatch(texts(view), /Alpha/);
   assert.match(texts(view), /Beta/);
   assert.equal(f.requests.length, before);
-  const detail = await f.render({ action: 'item:item-alice/project/2' });
+  const detail = await f.renderReady({ action: 'item:item-alice/project/2' });
   assert.match(texts(detail.children[1]), /Description/);
   assert.equal(f.requests.length, before + 1);
   assert.equal(new URL(f.requests.at(-1).url).pathname, '/repos/alice/project/issues/2');
@@ -509,7 +509,7 @@ test('A repository switch clears old details immediately and ignores a late olde
     return itemResponse(url, [repositoryIssue(url, 1, 'First result', { body: 'Old selected details' })]);
   } });
   await f.renderReady({});
-  await f.render({ action: 'item:item-alice/project/1' });
+  await f.renderReady({ action: 'item:item-alice/project/1' });
   const older = f.render({ action: 'repository', values: { repository: 'alice/second' } });
   await started.promise;
   assert.doesNotMatch(texts(await f.render({ action: 'query', values: { query: '' } })), /First result|Old selected details/);
@@ -589,7 +589,7 @@ test('Oversized Unicode Issue descriptions remain fully readable inside Nora wit
     return itemResponse(url, [issue(1, 'Large description', { body: description })]);
   } });
   await f.renderReady({});
-  let detail = await f.render({ action: 'item:item-alice/project/1' });
+  let detail = await f.renderReady({ action: 'item:item-alice/project/1' });
   const pieces = [];
   for (let page = 0; page < 100; page++) {
     const card = nodes(detail).find(node => node.id === 'issue-description');
@@ -638,7 +638,7 @@ test('A native workspace lists issues in its sidebar and opens full details dire
   assert.equal(item.children[0].tone, 'success');
   assert.ok(!nodes(initial).some(node => node.type === 'collection' || node.type === 'markdown'));
   const count = f.requests.length;
-  const selected = await f.render({ action: item.action });
+  const selected = await f.renderReady({ action: item.action });
   assert.equal(selected.children.length, 2);
   assert.equal(selected.children[1].id, 'item-details');
   assert.ok(nodes(selected.children[1]).some(node => node.type === 'markdown' && node.text.includes('A real description.')));
@@ -650,7 +650,7 @@ test('A native workspace lists issues in its sidebar and opens full details dire
   assert.ok(!nodes(closed.children[1]).some(node => node.type === 'markdown'));
   assert.equal(closed.children[0].value, '');
   assert.equal(closed.value, '');
-  const reopened = await f.render({ action: item.action });
+  const reopened = await f.renderReady({ action: item.action });
   assert.equal(reopened.children[1].id, 'item-details');
   assert.equal(f.requests.length, count + 2);
 });
@@ -725,7 +725,7 @@ test('A selected PR has one detail header and a complete Markdown description be
   await f.renderReady({});
   await f.render({ action: 'kind:pulls' });
   const requestCount = f.requests.length;
-  const selected = await f.render({ action: 'item:item-alice/project/42' });
+  const selected = await f.renderReady({ action: 'item:item-alice/project/42' });
   const detail = selected.children[1];
   assert.equal(detail.id, 'item-details');
   assert.equal(detail.children[0].type, 'toolbar');
@@ -775,7 +775,7 @@ test('Sidebar rows stay compact while the full detail keeps every review label',
   assert.match(item.subtitle, /#7.*alice\/project/);
   assert.ok(!nodes(initial.children[1]).some(node => node.type === 'markdown'));
   const requestCount = apiRequests(f).length;
-  const detail = (await f.render({ action: item.action })).children[1];
+  const detail = (await f.renderReady({ action: item.action })).children[1];
   const detailLabels = nodes(detail).find(node => node.text === labels.map(label => label.name).join(' · '));
   assert.ok(detailLabels);
   assert.equal(detailLabels.textStyle, 'caption');
@@ -792,7 +792,7 @@ test('Local author label and search filters never fetch data and hide details th
     return itemResponse(url, [issue(1, 'Editor bug', { labels: [{ name: 'bug' }] }), issue(2, 'Design change', { user: { login: 'bob' }, labels: [{ name: 'design' }] })]);
   } });
   await f.renderReady({});
-  await f.render({ action: 'item:item-alice/project/1' });
+  await f.renderReady({ action: 'item:item-alice/project/1' });
   const count = f.requests.length;
   const author = await f.render({ action: 'author', values: { author: 'bob' } });
   assert.equal(author.children.length, 2);
@@ -837,7 +837,7 @@ test('A stale repository failure cannot replace the newest repository or its sel
   const older = f.render({ action: 'repository', values: { repository: 'alice/second' } });
   await started.promise;
   await f.render({ action: 'repository', values: { repository: 'alice/first' } });
-  await f.render({ action: 'item:item-alice/first/1' });
+  await f.renderReady({ action: 'item:item-alice/first/1' });
   release.resolve();
   const final = await older;
   assert.equal(nodes(final).find(node => node.id === 'repository').value, 'alice/first');
@@ -1018,7 +1018,7 @@ test('Hand to Nora creates a source-rich draft only from the explicit selected-d
   } });
   await f.renderReady({});
   assert.equal(f.drafts.length, 0);
-  const selected = await f.render({ action: 'item:item-alice/project/42' });
+  const selected = await f.renderReady({ action: 'item:item-alice/project/42' });
   assert.ok(nodes(selected.children[1]).some(node => node.action === 'handoff-item' && node.appearance === 'primary'));
   assert.equal(f.drafts.length, 0);
   const count = f.requests.length;
@@ -1049,12 +1049,12 @@ test('Nora draft context tracks the current repository PR and rejects stale or h
       repository_url: 'https://api.github.com/repos/team/second', html_url: 'https://github.com/team/second/pull/7' })]);
   } });
   await f.renderReady({});
-  await f.render({ action: 'item:item-alice/project/7' });
+  await f.renderReady({ action: 'item:item-alice/project/7' });
   await f.render({ action: 'repository', values: { repository: 'team/second' } });
   await f.render({ action: 'handoff-item' });
   assert.equal(f.drafts.length, 0);
   await f.render({ action: 'kind:pulls' });
-  await f.render({ action: 'item:item-team/second/7' });
+  await f.renderReady({ action: 'item:item-team/second/7' });
   await f.render({ action: 'handoff-item' });
   assert.match(f.drafts[0].context, /Repository: team\/second\nType: PR/);
   assert.match(f.drafts[0].context, /State: Merged/);
@@ -1071,7 +1071,7 @@ test('Large Unicode GitHub source becomes a bounded Nora draft with intact text 
     return itemResponse(url, [issue(9, '你好🧑🏽‍💻'.repeat(100), { body: '你好🧑🏽‍💻'.repeat(30_000) })]);
   } });
   await f.renderReady({});
-  await f.render({ action: 'item:item-alice/project/9' });
+  await f.renderReady({ action: 'item:item-alice/project/9' });
   await f.render({ action: 'handoff-item' });
   const draft = f.drafts[0];
   assert.ok(draft);
@@ -1123,7 +1123,7 @@ test('Large repository filters and paginated issue lists remain inside native vi
 test('Handoff requires the current explicit action capability and never saves that capability as content', async () => {
   const f = fixture({ saved: connection });
   await f.renderReady({});
-  await f.render({ action: 'item:item-alice/project/1' });
+  await f.renderReady({ action: 'item:item-alice/project/1' });
   const missing = await f.renderUnscoped({ action: 'handoff-item' });
   assert.match(texts(missing), /requires an explicit panel action/);
   assert.equal(f.drafts.length, 0);

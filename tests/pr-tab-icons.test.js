@@ -71,7 +71,7 @@ function host(capability) {
 }
 async function open(f) {
   await f.renderReady({}); await f.render({ action: 'kind:pulls' });
-  return f.render({ action: 'item:item-team/project/1' });
+  return f.renderReady({ action: 'item:item-team/project/1' });
 }
 
 test('Actual SDK buttonIcon capability renders supplied tabs and preserves the draft across all four tab actions', async () => {

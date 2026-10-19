@@ -111,7 +111,7 @@ function host(capability) {
 }
 async function open(f) {
   await f.renderReady({}); await f.render({ action: 'kind:pulls' });
-  return f.render({ action: 'item:item-team/project/1' });
+  return f.renderReady({ action: 'item:item-team/project/1' });
 }
 
 test('Actual SDK accepts the top summary and keeps it on all tabs without losing the draft or merge access', async () => {

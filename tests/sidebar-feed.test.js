@@ -232,7 +232,7 @@ test('Selecting a cross-repository Issue reads its repository detail and keeps s
     : url.pathname === '/repos/team/second/issues/7' ? body({ ...item, id: 777, title: 'Complete issue', body: 'Fetched issue description' })
     : assert.fail(`Unexpected URL: ${url}`));
   await f.renderReady({});
-  const view = await f.render({ action: `item:${key('team/second', 7)}` });
+  const view = await f.renderReady({ action: `item:${key('team/second', 7)}` });
   assert.match(texts(view), /Fetched issue description/);
   assert.equal(view.value, key('team/second', 7));
   assert.equal(new URL(apiRequests(f).at(-1).url).pathname, '/repos/team/second/issues/7');
@@ -245,7 +245,7 @@ test('Selecting a PR uses the pulls detail API even though the feed item used th
     : assert.fail(`Unexpected URL: ${url}`));
   await f.renderReady({});
   await f.render({ action: 'kind:pulls' });
-  const view = await f.render({ action: `item:${key('team/second', 7)}` });
+  const view = await f.renderReady({ action: `item:${key('team/second', 7)}` });
   assert.match(texts(view), /Full PR details|Merged/);
   assert.equal(view.value, key('team/second', 7));
   assert.equal(f.requests.filter(request => new URL(request.url).pathname === '/repos/team/second/pulls/7').length, 1);
@@ -259,9 +259,9 @@ test('Legacy numeric selection only resolves when the loaded repository-number i
   const f = feedFixture(async url => url.pathname === '/search/issues' ? searchBody([first, second]) : body(second));
   await f.renderReady({});
   const before = f.requests.length;
-  await f.render({ action: 'item:7' });
+  await f.renderReady({ action: 'item:7' });
   assert.equal(f.requests.length, before);
-  const selected = await f.render({ action: `item:${key('team/second', 7)}` });
+  const selected = await f.renderReady({ action: `item:${key('team/second', 7)}` });
   assert.equal(selected.value, key('team/second', 7));
 });
 
@@ -312,9 +312,10 @@ test('Late detail responses cannot replace a newer selection with the same numbe
   await f.renderReady({});
   const old = f.render({ action: `item:${key('alice/project', 7)}` });
   await started.promise;
-  await f.render({ action: `item:${key('team/second', 7)}` });
+  await f.renderReady({ action: `item:${key('team/second', 7)}` });
   release.resolve();
-  const view = await old;
+  await old;
+  const view = await f.renderReady({});
   assert.equal(view.value, key('team/second', 7));
   assert.match(texts(view), /Current second details/);
   assert.doesNotMatch(texts(view), /Late old details/);
@@ -333,7 +334,8 @@ test('Switching Issues to PRs during a delayed detail failure clears the old sel
   await started.promise;
   await f.render({ action: 'kind:pulls' });
   release.resolve();
-  const view = await old;
+  await old;
+  const view = await f.renderReady({});
   assert.deepEqual(itemActions(view), [`item:${key('team/second', 2)}`]);
   assert.doesNotMatch(texts(view), /access was denied/);
   assert.ok(!view.value);
@@ -352,7 +354,8 @@ test('A local search hiding the selected item prevents a pending detail from reo
   await f.render({ action: 'query', values: { query: 'Second' } });
   assert.equal(f.requests.length, before);
   release.resolve();
-  const view = await old;
+  await old;
+  const view = await f.renderReady({});
   assert.ok(!view.value);
   assert.doesNotMatch(texts(view), /Hidden late detail/);
 });
@@ -422,7 +425,8 @@ test('Changing the connected account cannot restore an earlier account detail re
   await started.promise;
   await f.render({ action: 'connect-token', values: { token: 'newer_token' } });
   release.resolve();
-  const view = await old;
+  await old;
+  const view = await f.renderReady({});
   assert.match(texts(view), /bob|New account item/);
   assert.doesNotMatch(texts(view), /Previous account details|Old account item/);
   assert.ok(!view.value);
@@ -433,13 +437,13 @@ test('A detail error exposes retry and prevents handing an unfetched list snapsh
   const item = feedItem('team/second', 3, 'Source item', { body: 'Incomplete list snapshot' });
   const f = feedFixture(async url => url.pathname === '/search/issues' ? searchBody([item]) : failures ? body({}, 403) : body({ ...item, body: 'Recovered complete details' }));
   await f.renderReady({});
-  const failed = await f.render({ action: `item:${key('team/second', 3)}` });
+  const failed = await f.renderReady({ action: `item:${key('team/second', 3)}` });
   assert.match(texts(failed), /access was denied/);
   assert.ok(nodes(failed).some(node => node.action === 'retry-detail'));
   await f.render({ action: 'handoff-item' });
   assert.equal(f.drafts.length, 0);
   failures = false;
-  const recovered = await f.render({ action: 'retry-detail' });
+  const recovered = await f.renderReady({ action: 'retry-detail' });
   assert.match(texts(recovered), /Recovered complete details/);
   assert.doesNotMatch(texts(recovered), /access was denied/);
   await f.render({ action: 'handoff-item' });
@@ -452,7 +456,7 @@ test('A detail response for a different number or repository is rejected without
   for (const detail of [feedItem('team/second', 99, 'Wrong number'), feedItem('attacker/project', 3, 'Wrong repo')]) {
     const f = feedFixture(async url => url.pathname === '/search/issues' ? searchBody([feedItem('team/second', 3, 'Selected source')]) : body(detail));
     await f.renderReady({});
-    const view = await f.render({ action: `item:${key('team/second', 3)}` });
+    const view = await f.renderReady({ action: `item:${key('team/second', 3)}` });
     assert.match(texts(view), /invalid response/);
     assert.doesNotMatch(texts(view), /Wrong number|Wrong repo/);
     await f.render({ action: 'handoff-item' });
@@ -472,7 +476,8 @@ test('Closing a detail during its request clears selection and a late response c
   await started.promise;
   await f.render({ action: 'close-detail' });
   release.resolve();
-  const view = await opening;
+  await opening;
+  const view = await f.renderReady({});
   assert.ok(!view.value);
   assert.doesNotMatch(texts(view), /Late closed detail/);
   await f.render({ action: 'handoff-item' });
@@ -504,7 +509,7 @@ test('The active feed excludes stale closed merged and missing-state search resu
     for (const [title] of variants) assert.ok(!texts(view).includes(title));
     assert.ok(!nodes(view).some(node => node.action === 'status' || node.action === 'all-states'));
     const before = f.requests.length;
-    const stale = await f.render({ action: `item:${key('alice/project', 3)}` });
+    const stale = await f.renderReady({ action: `item:${key('alice/project', 3)}` });
     assert.equal(f.requests.length, before);
     assert.ok(!stale.value);
   }
@@ -538,10 +543,10 @@ test('Refreshing a newly closed Issue keeps its detail and later stale open inde
     return body({ ...item, state: closed ? 'closed' : 'open', body: 'Complete source remains readable' });
   });
   await f.renderReady({});
-  const initial = await f.render({ action: `item:${key('team/second', 7)}` });
+  const initial = await f.renderReady({ action: `item:${key('team/second', 7)}` });
   assert.equal(initial.children[0].items.length, 1);
   closed = true;
-  const refreshed = await f.render({ action: 'refresh-detail' });
+  const refreshed = await f.renderReady({ action: 'refresh-detail' });
   assert.equal(refreshed.value, key('team/second', 7));
   assert.equal(refreshed.children[0].value, '');
   assert.deepEqual(itemActions(refreshed), []);
@@ -553,7 +558,7 @@ test('Refreshing a newly closed Issue keeps its detail and later stale open inde
   assert.doesNotMatch(texts(appended), /Stale open copy from the search index/);
   await f.render({ action: 'close-detail' });
   const before = f.requests.length;
-  const stale = await f.render({ action: `item:${key('team/second', 7)}` });
+  const stale = await f.renderReady({ action: `item:${key('team/second', 7)}` });
   assert.equal(f.requests.length, before);
   assert.ok(!stale.value);
 });

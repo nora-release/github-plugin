@@ -27,7 +27,7 @@ function host({ timeline = [], comments = [], commits = [] } = {}) {
 async function open(f) {
   await f.renderReady();
   await f.render({ action: 'kind:pulls' });
-  return f.render({ action: 'item:item-team/project/1' });
+  return f.renderReady({ action: 'item:item-team/project/1' });
 }
 const activeButton = (view, action) => nodes(view).find(value => value.type === 'button' && value.action === action && !value.disabled);
 

@@ -6,7 +6,7 @@ test('Issues use the same fixed native detail structure and preserve read-only a
   const f = fixture({ saved: connection });
   const overview = await f.renderReady({});
   assert.ok(nodes(overview.children[0]).some(value => value.id === 'github-feed-controls' && value.appearance === 'plain'));
-  const selected = await f.render({ action: 'item:item-alice/project/1' });
+  const selected = await f.renderReady({ action: 'item:item-alice/project/1' });
   const detail = selected.children[1];
   assert.equal(detail.type, 'detail');
   assert.deepEqual(Array.from(detail.children.slice(0, 3), value => value.type), ['toolbar', 'column', 'tabBar']);
@@ -31,7 +31,7 @@ test('Issues use the same fixed native detail structure and preserve read-only a
 test('Older Nora hosts retain the compatible Issue description without unsupported detail views', async () => {
   const f = fixture({ saved: connection, unavailableViewKinds: ['detail'] });
   await f.renderReady({});
-  const selected = await f.render({ action: 'item:item-alice/project/1' });
+  const selected = await f.renderReady({ action: 'item:item-alice/project/1' });
   assert.equal(selected.children[1].type, 'column');
   assert.ok(nodes(selected).some(value => value.type === 'markdown' && value.text === 'Description'));
   assert.ok(nodes(selected).some(value => value.action === 'handoff-item'));
@@ -42,7 +42,7 @@ test('Older Nora hosts retain the compatible Issue description without unsupport
 test('Hosts without timeline layout retain the existing author and complete Issue body', async () => {
   const f = fixture({ saved: connection, unavailableViewKinds: ['timelineItem'] });
   await f.renderReady({});
-  const selected = await f.render({ action: 'item:item-alice/project/1' });
+  const selected = await f.renderReady({ action: 'item:item-alice/project/1' });
   assert.ok(!nodes(selected).some(value => value.type === 'timelineItem'));
   const description = nodes(selected).find(value => value.id === 'issue-description');
   assert.equal(description.type, 'column');

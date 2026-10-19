@@ -915,7 +915,7 @@
       ];
       return children.length ? [node('row', { id: 'pr-change-summary' }, children)] : [];
     }
-    function tabs(model) {
+    function tabs(model, { disabled = false } = {}) {
       const labels = { discussion: t('Discussion', '讨论'), commits: t('Commits', '提交'), checks: t('Checks', '检查'), files: t('Files', '文件') };
       const symbols = { discussion: 'text.bubble', checks: 'checkmark.circle', commits: 'circle.and.line.horizontal', files: 'doc.on.doc' };
       const checks = headItems(model, 'checks').length + headItems(model, 'statuses').length;
@@ -926,7 +926,7 @@
       const counts = { discussion: model.item?.comments, checks: checks || checksComplete ? checks : undefined, commits: model.item?.commits, files: model.item?.changed_files };
       const summary = supportsTabBarSummary ? changeSummary(model) : [];
       return node('tabBar', { id: 'pr-tabs', ...(summary.length ? { items: summary } : {}) }, Object.keys(labels).map(tab => button(labels[tab], `pr-tab:${tab}`, {
-        id: `pr-tab-${tab}`, symbol: symbols[tab], ...(supportsButtonIcon ? { iconSVG: tabIconSVGs[tab] } : {}), ...(model.tab === tab || tab === 'discussion' && model.tab === 'overview' ? { value: 'selected' } : {}),
+        id: `pr-tab-${tab}`, disabled, symbol: symbols[tab], ...(supportsButtonIcon ? { iconSVG: tabIconSVGs[tab] } : {}), ...(model.tab === tab || tab === 'discussion' && model.tab === 'overview' ? { value: 'selected' } : {}),
         ...(Number.isInteger(counts[tab]) && counts[tab] >= 0 ? { subtitle: String(counts[tab]) } : {}),
       })));
     }
@@ -975,6 +975,11 @@
         nativeRow(merge.text, supportsNativeTimeline ? '' : t('Review merge options', '查看合并选项'), { action: 'pr-toggle-merge', symbol: merge.symbol, tone: merge.tone,
           ...(supportsItemRowIcon && merge.iconSVG ? { iconSVG: merge.iconSVG } : {}) }),
       ]);
+    }
+    function loadingAside(model) {
+      return hasDetailAside(model) ? [node('column', { id: 'pr-context-aside' }, [
+        node('progress', { id: 'item-details-aside-loading', appearance: 'secondary', text: t('Loading details…', '正在加载详情…') }),
+      ])] : [];
     }
     function nativeAside(model) {
       if (!hasDetailAside(model)) return [];
@@ -1361,7 +1366,7 @@
       if (model.mergeExpanded || model.merge?.pending) body.unshift(node('column', { id: 'pr-merge-options', appearance: 'secondary' }, mergeActions(model)));
       return body;
     }
-    return { summary, content, actions, tabs, nativeContent, nativeDescription, nativeAside, nativeToolbarActions, toggleCommitGroup, navigateDiscussion, navigateCommits, navigateBody, navigateCommitGroup, workflow, supportsNativeLayout };
+    return { summary, content, actions, tabs, nativeContent, nativeDescription, nativeAside, loadingAside, nativeToolbarActions, toggleCommitGroup, navigateDiscussion, navigateCommits, navigateBody, navigateCommitGroup, workflow, supportsNativeLayout };
   }
   const panelID = 'com.nora.github.panel';
   const clientID = 'Iv23liPZy7EARoSnYoYy';
@@ -1388,7 +1393,7 @@
     network: t('GitHub could not be reached. Try again.', '无法连接 GitHub，请重试。'),
     invalid: t('GitHub returned an invalid response. Try again.', 'GitHub 返回了无效结果，请重试。'),
   };
-  const state = { user: null, avatarBase64: null, avatarAccount: '', avatarURL: '', repos: [], repo: '', repoQuery: '', items: [], kind: 'issues', query: '', author: '', label: '', page: 1, repoPage: 1, moreItems: false, moreRepos: false, selected: null, detailsVisible: false, detailLoading: false, detailError: '', device: null, error: '', itemLoadError: '', itemRetryAppend: false, restored: false, showToken: false, showOtherRepository: false, manualRepository: '', itemsLoading: false, reposLoading: false };
+  const state = { user: null, avatarBase64: null, avatarAccount: '', avatarURL: '', repos: [], repo: '', repoQuery: '', items: [], kind: 'issues', query: '', author: '', label: '', page: 1, repoPage: 1, moreItems: false, moreRepos: false, selected: null, detailsVisible: false, detailLoading: false, detailError: '', detailTab: 'discussion', device: null, error: '', itemLoadError: '', itemRetryAppend: false, restored: false, showToken: false, showOtherRepository: false, manualRepository: '', itemsLoading: false, reposLoading: false };
   const avatars = new Map();
   let issueBodyPages = {};
   let participantButtons = new WeakMap();
@@ -1401,6 +1406,7 @@
   let generation = 0;
   let itemRevision = 0;
   let detailRevision = 0;
+  let detailOperation = null;
   let repoRevision = 0;
   let refreshOperation = null;
   let avatarOperation = null;
@@ -1599,6 +1605,7 @@
   }
   function clearDetails() {
     ++detailRevision;
+    detailOperation = null;
     pullDetails.reset();
     issueBodyPages = {};
     state.selected = null; state.detailsVisible = false; state.detailLoading = false; state.detailError = '';
@@ -1607,6 +1614,8 @@
     const revision = ++detailRevision, current = generation;
     const requestedKey = itemKey(item), requestedKind = state.kind, requestedRepo = state.repo;
     if (requestedKind === 'issues' && (!preserveTab || !state.selected || itemKey(state.selected) !== requestedKey)) issueBodyPages = {};
+    const previous = pullDetails.current;
+    state.detailTab = preserveTab && previous?.key === `${itemRepository(item)}/${item.number}` ? previous.tab : 'discussion';
     state.selected = item; state.detailsVisible = true; state.detailLoading = true; state.detailError = '';
     const isCurrent = () => current === generation && revision === detailRevision && state.kind === requestedKind &&
       state.repo === requestedRepo && state.selected && itemKey(state.selected) === requestedKey && state.detailsVisible;
@@ -1624,6 +1633,18 @@
     } finally {
       if (isCurrent()) state.detailLoading = false;
     }
+  }
+  function readDetail(item, options = {}) {
+    if (!supportsPanelInvalidation) return loadDetail(item, options);
+    const current = generation, user = state.user, key = itemKey(item);
+    const operation = { revision: detailRevision + 1 };
+    detailOperation = operation;
+    void loadDetail(item, options).finally(() => {
+      if (detailOperation !== operation) return;
+      detailOperation = null;
+      if (current === generation && state.user === user && detailRevision === operation.revision &&
+          state.detailsVisible && state.selected && itemKey(state.selected) === key) invalidatePanel(current, user);
+    }).catch(() => {});
   }
   function findSelectedItem(value) {
     if (typeof value !== 'string') return null;
@@ -2128,8 +2149,11 @@
   }
   function detailView() {
     const item = state.selected, status = itemStatus(item), date = itemDate(item);
-    if (pullView.supportsNativeLayout && (state.kind === 'issues' || pullDetails.current)) {
-      const isPR = state.kind === 'pulls', model = isPR ? pullDetails.current : { item, repo: itemRepository(item), number: item.number, nativeBodyPages: issueBodyPages };
+    if (pullView.supportsNativeLayout) {
+      const isPR = state.kind === 'pulls';
+      const current = isPR && pullDetails.current?.key === `${itemRepository(item)}/${item.number}` ? pullDetails.current : null;
+      const model = isPR ? !state.detailLoading && current || { item, repo: itemRepository(item), number: item.number,
+        headSHA: '', tab: state.detailTab, sections: {} } : { item, repo: itemRepository(item), number: item.number, nativeBodyPages: issueBodyPages };
       const toolbar = node('toolbar', {}, [node('spacer'),
         button(t('Hand to Nora', '交给 Nora'), 'handoff-item', state.detailLoading || !!state.detailError, { appearance: 'primary', symbol: 'sparkles' }),
         ...(isPR && !state.detailLoading && !state.detailError ? pullView.nativeToolbarActions(model) : []),
@@ -2138,12 +2162,12 @@
       const summary = column([row([node('badge', status),
         styledText(boundedText(String(item.title || ''), 8192, '…'), 'title', 'neutral'),
         styledText(`#${item.number}`, 'caption')])]);
-      const body = state.detailLoading ? [node('progress', { text: t('Loading details…', '正在加载详情…') })]
+      const body = state.detailLoading ? [node('progress', { id: 'item-details-loading', appearance: 'secondary', text: t('Loading details…', '正在加载详情…') })]
         : state.detailError ? [node('badge', { text: short(state.detailError, 512), tone: 'danger' }), button(t('Retry details', '重试详情'), 'retry-detail')]
           : isPR ? pullView.nativeContent(model) : [pullView.nativeDescription(model, item.html_url, 'issue-description'),
             button(t('View discussion on GitHub', '在 GitHub 查看讨论'), 'open-item', false, { appearance: 'plain', symbol: 'text.bubble' })];
-      const tabs = isPR ? pullView.tabs(model) : node('tabBar', { id: 'issue-tabs' }, [node('button', { id: 'issue-tab-description', text: t('Overview', '概览'), value: 'selected' })]);
-      const aside = isPR && !state.detailLoading && !state.detailError ? pullView.nativeAside(model) : [];
+      const tabs = isPR ? pullView.tabs(model, { disabled: state.detailLoading || !!state.detailError }) : node('tabBar', { id: 'issue-tabs' }, [node('button', { id: 'issue-tab-description', text: t('Overview', '概览'), value: 'selected' })]);
+      const aside = isPR ? state.detailLoading ? pullView.loadingAside(model) : !state.detailError ? pullView.nativeAside(model) : [] : [];
       return node('detail', { id: 'item-details', ...(aside.length ? { items: aside } : {}) }, [toolbar, summary, tabs, ...body]);
     }
     const children = [
@@ -2159,7 +2183,7 @@
           ' · ' + t('More labels are available on GitHub.', '更多标签可在 GitHub 查看。')))] : []),
         row([button(t('Hand to Nora', '交给 Nora'), 'handoff-item', state.detailLoading || !!state.detailError, { appearance: 'primary', symbol: 'sparkles' })])
       ])];
-    if (state.detailLoading) children.push(node('progress', { text: t('Loading details…', '正在加载详情…') }));
+    if (state.detailLoading) children.push(node('progress', { id: 'item-details-loading', appearance: 'secondary', text: t('Loading details…', '正在加载详情…') }));
     else if (state.detailError) children.push(node('badge', { text: short(state.detailError, 512), tone: 'danger' }),
       button(t('Retry details', '重试详情'), 'retry-detail', false, { symbol: 'arrow.clockwise' }));
     else if (state.kind === 'pulls' && pullDetails.current) children.push(
@@ -2362,7 +2386,7 @@
       else if (action === 'clear-filters') { state.query = ''; state.author = ''; state.label = ''; }
       else if (action?.startsWith('item:')) {
         const item = findSelectedItem(action.slice(5));
-        if (item) await loadDetail(item);
+        if (item) await readDetail(item);
         else clearDetails();
       }
       else if (action === 'peek-item') {
@@ -2371,15 +2395,14 @@
         if (!selected) clearDetails();
         else if (state.selected && itemKey(state.selected) === itemKey(selected) && state.detailsVisible) {
           ++detailRevision; state.detailsVisible = false; state.detailLoading = false; state.detailError = '';
-        } else await loadDetail(selected);
+        } else await readDetail(selected);
       }
       else if (action === 'close-detail') clearDetails();
-      else if (action === 'retry-detail' && state.selected && state.detailsVisible) await loadDetail(state.selected, { preserveTab: true });
+      else if (action === 'retry-detail' && state.selected && state.detailsVisible) await readDetail(state.selected, { preserveTab: true });
       else if ((action === 'refresh-detail' || action === 'pr-refresh') && state.selected && state.detailsVisible) {
-        if (state.kind === 'pulls' && pullDetails.current) await pullDetails.refresh();
-        else await loadDetail(state.selected, { preserveTab: true });
+        await readDetail(state.selected, { preserveTab: true });
       }
-      else if (action?.startsWith('pr-tab:')) {
+      else if (action?.startsWith('pr-tab:') && !state.detailLoading && !state.detailError) {
         const record = pullDetails.current, tab = action.slice(7);
         await pullDetails.selectTab(tab);
         if (tab === 'checks' && pullView.supportsNativeLayout && record && pullDetails.current === record) {
@@ -2447,12 +2470,12 @@
       }
       else if (action?.startsWith('pr-commits:') && pullDetails.current) pullView.toggleCommitGroup(pullDetails.current, action.slice(11));
       else if (action === 'pr-toggle-merge' && pullDetails.current) pullDetails.current.mergeExpanded = !pullDetails.current.mergeExpanded;
-      else if (action === 'pr-comment') await pullDetails.postComment({ authorized: typeof event.actionCapability === 'string' && !!event.actionCapability.trim() });
-      else if (action?.startsWith('pr-merge:')) {
+      else if (action === 'pr-comment' && !state.detailLoading && !state.detailError) await pullDetails.postComment({ authorized: typeof event.actionCapability === 'string' && !!event.actionCapability.trim() });
+      else if (action?.startsWith('pr-merge:') && !state.detailLoading && !state.detailError) {
         if (pullDetails.current) pullDetails.current.mergeExpanded = true;
         pullDetails.prepareMerge(action.slice(9));
       }
-      else if (action === 'pr-confirm-merge') {
+      else if (action === 'pr-confirm-merge' && !state.detailLoading && !state.detailError) {
         if (pullDetails.current) pullDetails.current.mergeExpanded = true;
         await pullDetails.confirmMerge({ authorized: typeof event.actionCapability === 'string' && !!event.actionCapability.trim() });
       }

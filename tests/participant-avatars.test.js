@@ -36,7 +36,7 @@ function participantFixture({ pulls = [pull()], comments = [], reviews = [], rev
 }
 async function openPR(f, number = 1) {
   await f.renderReady({}); await f.render({ action: 'kind:pulls' });
-  return f.render({ action: `item:item-team/project/${number}` });
+  return f.renderReady({ action: `item:item-team/project/${number}` });
 }
 async function painted(f) { await tick(); return f.render({}); }
 
@@ -53,7 +53,7 @@ test('Issue and PR descriptions, comments, reviews, inline replies and timeline 
   assert.ok(f.requests.every(value => !value.method || value.method === 'GET'));
   const issueItem = { ...pull(2), pull_request: undefined, html_url: 'https://github.com/team/project/issues/2', user: user('issue-author', 16) };
   const issues = participantFixture({ pulls: [issueItem] });
-  await issues.renderReady({}); await issues.render({ action: 'item:item-team/project/2' });
+  await issues.renderReady({}); await issues.renderReady({ action: 'item:item-team/project/2' });
   assert.equal(author(await painted(issues), 'issue-author')?.avatarBase64, image);
 });
 
@@ -61,7 +61,7 @@ test('Case-insensitive identity reuses a repository owner image and does not dow
   const f = participantFixture({ pulls: [pull(1, { user: user('TEAM', 40) })], comments: [{ id: 1, user: user('team', 40), body: 'Same owner', created_at: '2026-10-15T00:00:00Z' }],
     override: url => url.pathname === '/user/repos' ? body([{ ...repo('team/project'), owner: user('TeAm', 40) }]) : undefined });
   await f.renderReady({}); await tick();
-  await f.render({ action: 'kind:pulls' }); await f.render({ action: 'item:item-team/project/1' });
+  await f.render({ action: 'kind:pulls' }); await f.renderReady({ action: 'item:item-team/project/1' });
   const current = await painted(f);
   assert.equal(author(current, 'TEAM')?.avatarBase64, image);
   assert.equal(author(current, 'team')?.avatarBase64, image);
@@ -122,7 +122,7 @@ test('Invalid avatar URLs use only the safe account fallback and failed images r
   assert.equal(avatarRequests(f).filter(value => new URL(value.url).pathname === '/writer').length, 1);
   assert.ok(!f.requests.some(value => new URL(value.url).hostname === 'evil.test'));
   fails = false;
-  await f.render({ action: 'refresh-detail' });
+  await f.renderReady({ action: 'refresh-detail' });
   assert.equal(author(await painted(f), 'writer')?.avatarBase64, image);
   assert.equal(avatarRequests(f).filter(value => new URL(value.url).pathname === '/writer').length, 2);
 });
@@ -148,12 +148,12 @@ test('Page changes retain valid images in cache without repainting a different v
   } });
   try {
     await openPR(f); await started.promise;
-    await f.render({ action: 'item:item-team/project/2' }); await tick();
+    await f.renderReady({ action: 'item:item-team/project/2' }); await tick();
     const before = f.invalidations.length;
     release.resolve(); await tick();
     assert.equal(f.invalidations.length, before, 'An off-page writer cannot cause an unrelated redraw');
     assert.equal(author(await f.render({}), 'other')?.avatarBase64, image2);
-    const back = await f.render({ action: 'item:item-team/project/1' });
+    const back = await f.renderReady({ action: 'item:item-team/project/1' });
     assert.equal(author(back, 'writer')?.avatarBase64, image);
     assert.equal(avatarRequests(f).filter(value => new URL(value.url).pathname === '/u/10').length, 1);
   } finally { release.resolve(); }
@@ -167,7 +167,7 @@ test('A pending shared author image still reaches the replacement page that disp
   } });
   try {
     await openPR(f); await started.promise;
-    await f.render({ action: 'item:item-team/project/2' });
+    await f.renderReady({ action: 'item:item-team/project/2' });
     const before = f.invalidations.length;
     release.resolve(); await tick();
     assert.ok(f.invalidations.length > before);

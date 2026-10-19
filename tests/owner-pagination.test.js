@@ -248,7 +248,7 @@ test('Full PR details update the corresponding sidebar status while preserving i
   await f.renderReady({});
   const initial = await f.render({ action: 'kind:pulls' });
   assert.deepEqual(Array.from(initial.children[0].items, entry => entry.children[0].text), ['Open', 'Open']);
-  const selected = await f.render({ action: 'item:item-other/project/7' });
+  const selected = await f.renderReady({ action: 'item:item-other/project/7' });
   assert.deepEqual(Array.from(selected.children[0].items, entry => [entry.id, entry.children[0].text]),
     [['item-team/project/7', 'Open'], ['item-other/project/7', 'Draft']]);
   assert.equal(selected.children[0].value, 'item-other/project/7');
