@@ -120,7 +120,7 @@ test('Old avatar responses cannot repaint or populate a replacement account', as
     } });
   try {
     await f.renderReady({}); await accountStarted.promise; await ownerStarted.promise;
-    const next = await f.render({ action: 'connect-token', values: { token: 'newer_token' } });
+    const next = await f.renderReady({ action: 'connect-token', values: { token: 'newer_token' } });
     assert.equal(next.children[0].children[0].text, 'bob');
     await tick();
     const before = f.invalidations.length;

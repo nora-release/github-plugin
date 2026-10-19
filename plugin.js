@@ -1413,6 +1413,11 @@
   let avatarOperation = null;
   let panelInvalidation = null;
   let restoreOperation = null;
+  let managedRepositoryRevision = 0;
+  let managedRepositorySnapshot = null;
+  let managedRepositoryCheckpoint = null;
+  let managedRepositoryOperation = null;
+  let feedOperation = null;
   const supportsPanelInvalidation = typeof nora.panels?.invalidate === 'function';
   let credentialWrites = Promise.resolve();
   let renderRevision = 0;
@@ -1582,6 +1587,51 @@
     if (!Array.isArray(result.data)) throw new Error(message.invalid);
     return { items: result.data, nextPage: hasNext(result.headers) ? p + 1 : null };
   }
+  function clearManagedRepositories() {
+    ++managedRepositoryRevision;
+    managedRepositorySnapshot = null;
+    managedRepositoryCheckpoint = null;
+    managedRepositoryOperation = null;
+  }
+  function hasManagedRepositorySnapshot() {
+    return managedRepositorySnapshot?.generation === generation && managedRepositorySnapshot.user === state.user;
+  }
+  async function loadManagedRepositories() {
+    if (hasManagedRepositorySnapshot()) return managedRepositorySnapshot.repositories;
+    if (managedRepositoryOperation?.generation === generation && managedRepositoryOperation.user === state.user) return managedRepositoryOperation.promise;
+    const current = generation, user = state.user, revision = managedRepositoryRevision;
+    const login = user?.login;
+    if (typeof login !== 'string' || !/^[A-Za-z0-9][A-Za-z0-9_-]{0,99}$/.test(login)) throw new Error(message.invalid);
+    const checkpoint = managedRepositoryCheckpoint?.generation === current && managedRepositoryCheckpoint.user === user
+      ? managedRepositoryCheckpoint : { generation: current, user, page: 1, repositories: new Map() };
+    managedRepositoryCheckpoint = checkpoint;
+    const operation = { generation: current, user, promise: null };
+    const isCurrent = () => current === generation && state.user === user && revision === managedRepositoryRevision && managedRepositoryOperation === operation;
+    managedRepositoryOperation = operation;
+    operation.promise = (async () => {
+      while (true) {
+        if (!isCurrent()) throw connectionChanged();
+        const p = page(checkpoint.page);
+        const result = await api(`/user/repos?affiliation=collaborator,organization_member&sort=updated&per_page=100&page=${p}`);
+        if (!isCurrent()) throw connectionChanged();
+        if (!Array.isArray(result.data)) throw new Error(message.invalid);
+        for (const repo of result.data) {
+          if (!(repo?.permissions?.admin === true || repo?.permissions?.maintain === true) || repo.archived === true) continue;
+          let name;
+          try { name = repository(repo.full_name); } catch { continue; }
+          if (name.split('/')[0].toLowerCase() === login.toLowerCase()) continue;
+          if (!checkpoint.repositories.has(name.toLowerCase())) checkpoint.repositories.set(name.toLowerCase(), name);
+        }
+        if (hasNext(result.headers)) { checkpoint.page = p + 1; continue; }
+        managedRepositorySnapshot = { generation: current, user, repositories: checkpoint.repositories };
+        managedRepositoryCheckpoint = null;
+        return managedRepositorySnapshot.repositories;
+      }
+    })().finally(() => {
+      if (managedRepositoryOperation === operation) managedRepositoryOperation = null;
+    });
+    return operation.promise;
+  }
   async function listItems(args, kind) {
     const repo = repository(args.repository), p = page(args.page), filter = status(args.state);
     const result = await api(`/repos/${repo}/${kind}?state=${filter}&sort=updated&direction=desc&per_page=50&page=${p}`);
@@ -1591,11 +1641,21 @@
   async function panelItems(repo, kind, p) {
     const login = state.user?.login;
     if (typeof login !== 'string' || !/^[A-Za-z0-9][A-Za-z0-9_-]{0,99}$/.test(login)) throw new Error(message.invalid);
+    const name = repo ? repository(repo) : '';
+    let scope = `involves:${login}`;
+    if (kind === 'pulls') {
+      const owned = name && name.split('/')[0].toLowerCase() === login.toLowerCase();
+      const managed = owned ? new Map() : await loadManagedRepositories();
+      scope = name ? owned || managed.has(name.toLowerCase()) ? '' : `(involves:${login} OR review-involves:${login})`
+        : `(involves:${login} OR review-involves:${login} OR user:${login}${[...managed.values()].map(repository => ` OR repo:${repository}`).join('')})`;
+    }
     const query = [kind === 'pulls' ? 'is:pull-request' : 'is:issue', 'state:open', 'archived:false',
-      ...(repo ? [`repo:${repository(repo)}`] : []),
-      kind === 'pulls' ? `(involves:${login} OR review-involves:${login})` : `involves:${login}`].join(' ');
+      ...(name ? [`repo:${name}`] : []), ...(scope ? [scope] : [])].join(' ');
+    const path = `/search/issues?q=${encodeURIComponent(query)}&sort=updated&order=desc&per_page=50&page=${page(p)}&advanced_search=true`;
+    if (utf8Size(`https://api.github.com${path}`) > 8192) throw new Error(t(
+      'Your repository scope is too large for one GitHub search. Select a specific repository.', '仓库范围过大，无法一次查询。请选择具体仓库。'));
     // OR between qualifiers requires GitHub's advanced search mode.
-    const result = await api(`/search/issues?q=${encodeURIComponent(query)}&sort=updated&order=desc&per_page=50&page=${page(p)}&advanced_search=true`);
+    const result = await api(path);
     const data = result.data;
     if (!data || Array.isArray(data) || !Array.isArray(data.items) || !Number.isSafeInteger(data.total_count) || data.total_count < 0 ||
         typeof data.incomplete_results !== 'boolean') throw new Error(message.invalid);
@@ -1682,6 +1742,34 @@
       if (current === generation && revision === itemRevision) state.itemsLoading = false;
     }
   }
+  function readFeed(operation) {
+    if (!supportsPanelInvalidation) return operation();
+    const current = generation, user = state.user, pending = {};
+    feedOperation = pending;
+    const result = operation();
+    const requestedItems = itemRevision, requestedRepositories = repoRevision, requestedManagedRepositories = managedRepositoryRevision;
+    pending.promise = result.catch(error => {
+      if (current === generation && state.user === user && feedOperation === pending && requestedItems === itemRevision &&
+          requestedRepositories === repoRevision && requestedManagedRepositories === managedRepositoryRevision) state.error = error?.message || message.network;
+    }).finally(() => {
+      if (feedOperation !== pending) return;
+      feedOperation = null;
+      if (current === generation && state.user === user) invalidatePanel(current, user);
+    });
+  }
+  function readItems(append = false, retry = false) {
+    if (state.kind !== 'pulls' || hasManagedRepositorySnapshot()) return loadItems(append, retry);
+    return readFeed(() => loadItems(append, retry));
+  }
+  function readRepositoryRefresh(refreshItems) {
+    clearManagedRepositories();
+    const reloadItems = refreshItems || state.kind === 'pulls';
+    return readFeed(async () => {
+      const results = await Promise.allSettled([loadRepositories(), loadManagedRepositories().catch(() => {}), ...(reloadItems ? [loadItems()] : [])]);
+      const failure = results.find(result => result.status === 'rejected');
+      if (failure) throw failure.reason;
+    });
+  }
   async function loadRepositories(append = false) {
     const revision = ++repoRevision, current = generation;
     const requestedPage = append ? state.repoPage + 1 : 1;
@@ -1695,7 +1783,6 @@
       return current === generation && revision === repoRevision;
     } catch (error) {
       if (current !== generation || revision !== repoRevision) return false;
-      state.error = error?.message || message.network;
       throw error;
     } finally {
       if (current === generation && revision === repoRevision) state.reposLoading = false;
@@ -1875,6 +1962,8 @@
     state.avatarBase64 = null; state.avatarAccount = ''; state.avatarURL = ''; avatarOperation = null;
     panelInvalidation = null;
     restoreOperation = null;
+    feedOperation = null;
+    clearManagedRepositories();
     avatars.clear(); visibleParticipants.clear(); visibleParticipantPage = ''; participantButtons = new WeakMap(); participantCommitsOperation = null;
     state.itemLoadError = ''; state.itemRetryAppend = false;
     state.moreItems = false; state.moreRepos = false;
@@ -1897,15 +1986,16 @@
   }
   async function loadAccountData() {
     void loadAvatar();
-    const results = await Promise.allSettled([loadRepositories(), loadItems()]);
+    // PR scope is prefetched for fast switching; only a PR request should surface its failure.
+    const results = await Promise.allSettled([loadRepositories(), loadManagedRepositories().catch(() => {}), loadItems()]);
     const failure = results.find(result => result.status === 'rejected');
     if (failure) throw failure.reason;
   }
-  function startRestore() {
+  function startRestore(load = restore) {
     if (restoreOperation?.generation === generation) return;
     const current = generation, operation = { generation: current };
     restoreOperation = operation;
-    operation.promise = restore().catch(error => {
+    operation.promise = load().catch(error => {
       if (current === generation && restoreOperation === operation) state.error = error?.message || message.network;
     }).finally(() => {
       if (restoreOperation !== operation) return;
@@ -1943,7 +2033,8 @@
     if (!user || typeof user.login !== 'string' || !user.login) throw new Error(message.invalid);
     if (!await saveForGeneration(saved, current) || state.device !== device) return;
     clearAccount(); state.user = user; state.restored = true;
-    await loadAccountData();
+    if (supportsPanelInvalidation) startRestore(loadAccountData);
+    else await loadAccountData();
   }
   async function connectToken(value) {
     if (!validToken(value)) throw new Error(t('Enter a valid GitHub access token.', '请输入有效的 GitHub 访问 token。'));
@@ -1954,7 +2045,8 @@
     if (!user || typeof user.login !== 'string' || !user.login) throw new Error(message.invalid);
     if (!await saveForGeneration({ token: value }, current)) return;
     clearAccount(); state.user = user; state.restored = true;
-    await loadAccountData();
+    if (supportsPanelInvalidation) startRestore(loadAccountData);
+    else await loadAccountData();
   }
   function itemStatus(item) {
     const isPullRequest = state.kind === 'pulls';
@@ -2081,7 +2173,7 @@
   function accountMenu() {
     const children = [button(t('Open another repository…', '打开其他仓库…'), 'show-other-repo', false, { symbol: 'plus' }),
       button(message.manage, 'manage', false, { symbol: 'folder.badge.gearshape' }),
-      button(t('Refresh repositories', '刷新仓库'), 'refresh-repos', state.reposLoading, { symbol: 'arrow.clockwise' }), node('divider'),
+      button(t('Refresh repositories', '刷新仓库'), 'refresh-repos', state.reposLoading || !!managedRepositoryOperation, { symbol: 'arrow.clockwise' }), node('divider'),
       button(t('Disconnect', '断开连接'), 'disconnect', false, { symbol: 'rectangle.portrait.and.arrow.right' })];
     if (state.moreRepos) children.splice(3, 0, button(t('Load more repositories', '加载更多仓库'), 'more-repos', state.reposLoading, { symbol: 'arrow.down.circle' }));
     return node('menu', { text: state.user.login, tone: 'neutral', symbol: 'person.crop.circle',
@@ -2196,7 +2288,7 @@
     return node('column', { id: 'item-details' }, children);
   }
   function emptyListView() {
-    if (state.itemsLoading) return node('emptyState', { text: t('Loading from GitHub…', '正在从 GitHub 加载…'),
+    if (state.itemsLoading) return node('emptyState', { id: 'github-items-loading', text: t('Loading from GitHub…', '正在从 GitHub 加载…'),
       subtitle: t('Fetching Issues and pull requests you participate in.', '正在获取与你相关的 Issues 和 PR。'), symbol: 'arrow.clockwise' }, [node('progress')]);
     if (state.error || state.itemLoadError) return node('emptyState', { text: t('Couldn’t load this view', '暂时无法加载'), subtitle: state.error || state.itemLoadError, symbol: 'exclamationmark.circle' },
       [button(state.error === message.expired ? t('Reconnect GitHub', '重新连接 GitHub') : t('Try again', '重试'),
@@ -2244,7 +2336,7 @@
     const items = filteredItems();
     let visibleItems = items.slice(0, maximumSidebarItems);
     const header = node('toolbar', {}, [styledText(`${state.repo || t('Related to me', '与我相关')} / ${state.kind === 'pulls' ? t('Pull requests', 'PR') : 'Issues'}`, 'caption', 'neutral'), node('spacer'),
-      button(message.refresh, 'refresh', state.itemsLoading || state.reposLoading, { appearance: 'icon', symbol: 'arrow.clockwise' })]);
+      button(message.refresh, 'refresh', state.itemsLoading || state.reposLoading || !!managedRepositoryOperation, { appearance: 'icon', symbol: 'arrow.clockwise' })]);
     let main;
     if (state.showOtherRepository) {
       main = column([header, node('emptyState', { id: 'other-repository', text: t('Open another repository', '打开其他仓库'),
@@ -2354,20 +2446,18 @@
       else if (action === 'finish-login') await finishLogin();
       else if (action === 'toggle-token') state.showToken = !state.showToken;
       else if (action === 'connect-token') await connectToken(values.token || '');
-      else if (action === 'refresh') {
-        await Promise.all([loadRepositories(), loadItems()]);
-      }
-      else if (action === 'refresh-repos') await loadRepositories();
+      else if (action === 'refresh') await readRepositoryRefresh(true);
+      else if (action === 'refresh-repos') await readRepositoryRefresh(false);
       else if (action === 'retry-load') {
         if (!state.user) {
           if (restoreOperation?.generation !== generation) state.restored = false;
           if (supportsPanelInvalidation) startRestore();
           else await restore();
         }
-        else await loadItems(state.itemRetryAppend, true);
+        else await readItems(state.itemRetryAppend, true);
       }
       else if (action === 'more-repos') await loadRepositories(true);
-      else if (action === 'more-items') await loadItems(true);
+      else if (action === 'more-items') await readItems(true);
       else if (action === 'show-other-repo') { state.showOtherRepository = true; state.manualRepository = ''; }
       else if (action === 'cancel-other-repo') { state.showOtherRepository = false; state.manualRepository = ''; }
       else if (action === 'repo-query') state.repoQuery = short(event.value ?? values['repo-query'] ?? '', 1024);
@@ -2376,15 +2466,15 @@
         const selectedRepository = action === 'open-repo' ? state.manualRepository : action.startsWith('repo:') ? action.slice(5) : (event.value ?? values.repository);
         state.repo = action !== 'open-repo' && selectedRepository === '' ? '' : repository(selectedRepository);
         state.showOtherRepository = false; state.query = ''; state.author = ''; state.label = '';
-        await loadItems();
+        await readItems();
       }
       else if (action === 'kind' || action?.startsWith('kind:')) {
         state.kind = action === 'kind' ? event.value ?? values.kind : action.slice(5);
         if (!['issues', 'pulls'].includes(state.kind)) state.kind = 'issues';
         state.showOtherRepository = false; state.query = ''; state.author = ''; state.label = '';
-        await loadItems();
+        await readItems();
       }
-      else if (action === 'status' || action === 'all-states') await loadItems();
+      else if (action === 'status' || action === 'all-states') await readItems();
       else if (action === 'query') { state.query = short(event.value ?? values.query ?? '', 1024); clearHiddenSelection(); }
       else if (action === 'author' || action === 'label') { state[action] = short(event.value ?? values[action] ?? '', 128); clearHiddenSelection(); }
       else if (action === 'clear-filters') { state.query = ''; state.author = ''; state.label = ''; }

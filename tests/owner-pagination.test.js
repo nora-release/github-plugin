@@ -109,7 +109,7 @@ test('Owner downloads run at most four together and deferred old account images 
   await started.promise;
   await new Promise(resolve => setImmediate(resolve));
   assert.equal(maximum, 4);
-  const current = await f.render({ action: 'connect-token', values: { token: 'newer_token' } });
+  const current = await f.renderReady({ action: 'connect-token', values: { token: 'newer_token' } });
   assert.equal(current.children[0].children[0].text, 'bob');
   release.resolve();
   assert.equal((await old).children[0].children[0].text, 'alice', 'The initial readable view is returned before the old owner images');
@@ -156,7 +156,7 @@ test('Every reload has a fresh scroll token even when returning to the same type
   const first = (await f.renderReady({})).children[0].loadMoreToken;
   await f.render({ action: 'kind:pulls' });
   const returned = (await f.render({ action: 'kind:issues' })).children[0].loadMoreToken;
-  const refreshed = (await f.render({ action: 'refresh' })).children[0].loadMoreToken;
+  const refreshed = (await f.renderReady({ action: 'refresh' })).children[0].loadMoreToken;
   assert.notEqual(first, returned);
   assert.notEqual(returned, refreshed);
   const filtered = await f.render({ action: 'query', value: 'Work' });

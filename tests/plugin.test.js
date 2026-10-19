@@ -165,7 +165,7 @@ test('A token connection also loads the public avatar while repository loading r
     if (url.pathname === '/user/repos') { repositoriesLoaded = true; return body([repo()]); }
     return itemResponse(url, [issue(1, 'Issue one')]);
   } });
-  const connecting = f.render({ action: 'connect-token', values: { token: 'test_token' } });
+  const connecting = f.renderReady({ action: 'connect-token', values: { token: 'test_token' } });
   await started.promise;
   await new Promise(resolve => setImmediate(resolve));
   assert.equal(repositoriesLoaded, true);
@@ -195,7 +195,7 @@ test('A completed browser device login loads its own public avatar without passi
   } });
   await f.render({ action: 'begin-login' });
   now = 6000;
-  const view = await f.render({ action: 'finish-login' });
+  const view = await f.renderReady({ action: 'finish-login' });
   assert.equal(accountHeader(view).text, 'alice');
   assert.equal(accountHeader(view).avatarBase64, avatarPNG);
   assert.equal(JSON.parse(f.stored()).token, 'device_token');
@@ -216,12 +216,14 @@ test('An old avatar response cannot replace the newer accounts avatar or usernam
     if (url.pathname === '/user/repos') return body([repo()]);
     return itemResponse(url, [issue(1, 'Issue one')]);
   } });
-  const older = f.render({ action: 'connect-token', values: { token: 'older_token' } });
+  const older = f.renderReady({ action: 'connect-token', values: { token: 'older_token' } });
   await started.promise;
-  const current = await f.render({ action: 'connect-token', values: { token: 'newer_token' } });
+  const previous = await older;
+  assert.equal(accountHeader(previous).text, 'alice', 'The old readable snapshot must not wait for its optional avatar');
+  assert.equal(accountHeader(previous).avatarBase64, undefined);
+  const current = await f.renderReady({ action: 'connect-token', values: { token: 'newer_token' } });
   assert.equal(accountHeader(current).text, 'bob');
   assert.equal(accountHeader(current).avatarBase64, avatarJPEG);
-  assert.equal(accountHeader(await older).text, 'alice', 'The old readable snapshot must not wait for its optional avatar');
   release.resolve();
   await new Promise(resolve => setImmediate(resolve));
   const late = await f.renderReady({});
@@ -243,7 +245,7 @@ test('Disconnect clears the avatar and a new connection fetches its own copy', a
   assert.equal(disconnected.type, 'emptyState');
   assert.ok(nodes(disconnected).every(node => node.avatarBase64 === undefined));
   assert.equal(f.stored(), null);
-  assert.equal(accountHeader(await f.render({ action: 'connect-token', values: { token: 'new_token' } })).avatarBase64, avatarPNG);
+  assert.equal(accountHeader(await f.renderReady({ action: 'connect-token', values: { token: 'new_token' } })).avatarBase64, avatarPNG);
   assert.equal(f.requests.filter(request => request.responseEncoding === 'base64').length, 2);
 });
 test('Script manifest has no native extension or signing identity', async () => {
@@ -437,7 +439,7 @@ test('A newer account connection wins over an older delayed user response', asyn
   } });
   const older = f.render({ action: 'connect-token', values: { token: 'older_token' } });
   await started.promise;
-  const current = await f.render({ action: 'connect-token', values: { token: 'newer_token' } });
+  const current = await f.renderReady({ action: 'connect-token', values: { token: 'newer_token' } });
   release.resolve();
   const stale = await older;
   assert.match(texts(current), /bob/);
@@ -472,7 +474,7 @@ test('A newer account replaces credentials even when an older save is already pe
   } });
   const older = f.render({ action: 'connect-token', values: { token: 'older_token' } });
   await started.promise;
-  const newer = f.render({ action: 'connect-token', values: { token: 'newer_token' } });
+  const newer = f.renderReady({ action: 'connect-token', values: { token: 'newer_token' } });
   await newerStarted.promise;
   release.resolve();
   const [, view] = await Promise.all([older, newer]);
@@ -536,7 +538,7 @@ test('Manual Finish sign-in observes the interval and persists credentials only 
   assert.match(texts(await f.render({ action: 'finish-login' })), /Waiting for your confirmation/);
   assert.equal(f.writes.length, 0);
   time += 5000;
-  const connected = await f.render({ action: 'finish-login' });
+  const connected = await f.renderReady({ action: 'finish-login' });
   assert.match(texts(connected), /alice/);
   assert.doesNotMatch(texts(connected), /ABCD-1234/);
   assert.equal(JSON.parse(f.stored()).token, 'authorized_token');

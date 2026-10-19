@@ -28,7 +28,10 @@ test('Connected overview searches only personal Issues without selecting or fetc
   const view = await f.renderReady({});
   assert.match(texts(view), /Team issue/);
   assert.deepEqual(itemActions(view), [`item:${key('team/second', 17)}`]);
-  assert.equal(apiRequests(f).length, 3);
+  assert.equal(apiRequests(f).length, 4);
+  assert.equal(apiRequests(f).filter(request => new URL(request.url).pathname === '/search/issues').length, 1);
+  assert.equal(apiRequests(f).filter(request => new URL(request.url).pathname === '/user/repos' && !new URL(request.url).searchParams.has('affiliation')).length, 1);
+  assert.equal(apiRequests(f).filter(request => new URL(request.url).pathname === '/user/repos' && new URL(request.url).searchParams.has('affiliation')).length, 1);
   assert.ok(apiRequests(f).every(request => request.headers.Authorization === 'Bearer test_token'));
   assert.ok(!f.requests.some(request => new URL(request.url).pathname.startsWith('/repos/')));
 });
@@ -75,7 +78,7 @@ test('Personal search pagination deduplicates repository and number rather than 
   assert.doesNotMatch(texts(view), /Earlier/);
 });
 
-test('Personal queries exclude unrelated public repository activity and include PR review involvement', async () => {
+test('Personal queries exclude unrelated public repository activity and include PR review involvement and owned repositories', async () => {
   const unrelated = feedItem('vitest-dev/vitest', 11594, 'Unrelated public pull request', { pull_request: {} });
   const relevant = feedItem('vitest-dev/docs-cn', 28, 'Review requested from Alice', { pull_request: {}, user: { login: 'contributor' } });
   const f = fixture({ saved: connection, route: async url => {
@@ -88,7 +91,7 @@ test('Personal queries exclude unrelated public repository activity and include 
       assert.equal(query, 'is:issue state:open archived:false involves:alice');
       return searchBody([]);
     }
-    assert.equal(query, 'is:pull-request state:open archived:false (involves:alice OR review-involves:alice)');
+    assert.equal(query, 'is:pull-request state:open archived:false (involves:alice OR review-involves:alice OR user:alice)');
     return searchBody([relevant]);
   } });
   assert.deepEqual(itemActions(await f.renderReady({})), []);
@@ -97,6 +100,45 @@ test('Personal queries exclude unrelated public repository activity and include 
   assert.match(texts(pulls), /Review requested from Alice/);
   assert.doesNotMatch(texts(pulls), new RegExp(unrelated.title));
   assert.ok(apiRequests(f).every(request => !new URL(request.url).searchParams.has('filter')));
+});
+
+test('Incoming PRs to owned repositories do not require author involvement or a loaded repository picker entry', async () => {
+  const incoming = feedItem('alice/not-in-picker', 41, 'Contributor proposes a fix', {
+    pull_request: {}, user: { login: 'contributor' }, assignees: [], requested_reviewers: [],
+  });
+  const reviewed = feedItem('team/reviewed', 18, 'Team review requested from Alice', {
+    pull_request: {}, user: { login: 'another-contributor' }, requested_reviewers: [{ login: 'alice' }],
+  });
+  const f = fixture({ saved: connection, route: async url => {
+    if (url.pathname === '/user') return body({ login: 'alice' });
+    if (url.pathname === '/user/repos') {
+      if (url.searchParams.has('affiliation')) return body([]);
+      assert.equal(url.searchParams.get('page'), '1');
+      return body([repo('team/picker-only')], 200, { Link: '<https://api.github.com/user/repos?page=2>; rel="next"' });
+    }
+    assert.equal(url.pathname, '/search/issues');
+    assert.equal(url.searchParams.get('advanced_search'), 'true');
+    const query = url.searchParams.get('q');
+    if (query.startsWith('is:issue ')) {
+      assert.equal(query, 'is:issue state:open archived:false involves:alice');
+      return searchBody([]);
+    }
+    assert.equal(query, 'is:pull-request state:open archived:false (involves:alice OR review-involves:alice OR user:alice)');
+    return url.searchParams.get('page') === '2'
+      ? searchBody([{ ...incoming, id: 9001, title: 'Updated contributor fix' }, reviewed])
+      : searchBody([incoming], 200, { Link: '<https://api.github.com/search/issues?page=2>; rel="next"' });
+  } });
+  await f.renderReady({});
+  const first = await f.render({ action: 'kind:pulls' });
+  assert.deepEqual(itemActions(first), [`item:${key('alice/not-in-picker', 41)}`]);
+  assert.match(texts(first), /Contributor proposes a fix/);
+  const next = await f.render({ action: 'more-items' });
+  assert.deepEqual(itemActions(next), [`item:${key('alice/not-in-picker', 41)}`, `item:${key('team/reviewed', 18)}`]);
+  assert.match(texts(next), /Updated contributor fix/);
+  assert.match(texts(next), /Team review requested from Alice/);
+  assert.doesNotMatch(texts(next), /Contributor proposes a fix/);
+  assert.equal(apiRequests(f).filter(request => new URL(request.url).pathname === '/user/repos' && !new URL(request.url).searchParams.has('affiliation')).length, 1);
+  assert.ok(!apiRequests(f).some(request => new URL(request.url).pathname.startsWith('/repos/')));
 });
 
 test('Open personal scope survives pagination, repository selection, legacy status events, and Issue/PR switches', async () => {
@@ -130,7 +172,7 @@ test('Open personal scope survives pagination, repository selection, legacy stat
     { query: 'is:pull-request state:open archived:false repo:team/second (involves:alice OR review-involves:alice)', page: '2' },
     { query: 'is:pull-request state:open archived:false repo:team/second (involves:alice OR review-involves:alice)', page: '1' },
     { query: 'is:pull-request state:open archived:false repo:team/second (involves:alice OR review-involves:alice)', page: '1' },
-    { query: 'is:pull-request state:open archived:false (involves:alice OR review-involves:alice)', page: '1' },
+    { query: 'is:pull-request state:open archived:false (involves:alice OR review-involves:alice OR user:alice)', page: '1' },
     { query: 'is:issue state:open archived:false involves:alice', page: '1' },
   ]);
 });
@@ -382,9 +424,15 @@ test('Refreshing the overview reloads one personal search independently of the r
     return searchBody([feedItem('team/second', 1, 'Fresh issue')]);
   });
   await f.renderReady({});
-  await f.render({ action: 'refresh' });
-  assert.equal(f.requests.filter(request => new URL(request.url).pathname === '/search/issues').length, 2);
-  assert.equal(f.requests.filter(request => new URL(request.url).pathname === '/user/repos').length, 2);
+  assert.equal(apiRequests(f).filter(request => new URL(request.url).pathname === '/search/issues').length, 1);
+  const refreshed = await f.renderReady({ action: 'refresh' });
+  assert.deepEqual(itemActions(refreshed), [`item:${key('team/second', 1)}`]);
+  const searches = apiRequests(f).filter(request => new URL(request.url).pathname === '/search/issues');
+  assert.equal(searches.length, 2);
+  assert.ok(searches.every(request => new URL(request.url).searchParams.get('q') === 'is:issue state:open archived:false involves:alice' &&
+    new URL(request.url).searchParams.get('page') === '1'));
+  assert.equal(apiRequests(f).filter(request => new URL(request.url).pathname === '/user/repos' && !new URL(request.url).searchParams.has('affiliation')).length, 2);
+  assert.equal(apiRequests(f).filter(request => new URL(request.url).pathname === '/user/repos' && new URL(request.url).searchParams.has('affiliation')).length, 2);
   assert.ok(!f.requests.some(request => new URL(request.url).pathname.startsWith('/repos/')));
 });
 

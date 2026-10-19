@@ -112,7 +112,7 @@ function fixture({ saved = null, locale = 'en', unavailableViewKinds = [], suppo
     : new Promise(resolve => invalidationWaiters.push({ after, resolve }));
   const renderReady = async (event = {}) => {
     let after = invalidations.length, result = await render(event);
-    while (result.id === 'github-restoring' || nodes(result).some(node => node.id === 'item-details-loading')) {
+    while (result.id === 'github-restoring' || nodes(result).some(node => ['item-details-loading', 'github-items-loading'].includes(node.id))) {
       if (result.id === 'github-restoring') await waitForInvalidation(after);
       else await new Promise(resolve => setImmediate(resolve));
       after = invalidations.length;
