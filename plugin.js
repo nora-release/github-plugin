@@ -1069,7 +1069,6 @@
         const header = row([authorButton(model, entry, prURL(model)),
           text(isEvent ? [eventLabel(entry), date(entry)].filter(Boolean).join(' · ') : date(entry)), node('spacer'),
           ...(source === 'reviews' ? [reviewState(entry.state)] : []),
-          ...(!isEvent ? [open(model, t('View comment on GitHub', '在 GitHub 查看留言'), entry.html_url, '', { appearance: 'icon' })] : []),
         ]);
         const children = [header];
         if (isEvent) {
@@ -1133,7 +1132,6 @@
         } else {
           if (created) metadata.push(text(created));
           if (source === 'reviews') metadata.push(reviewState(entry.state));
-          metadata.push(node('spacer'), open(model, t('View comment on GitHub', '在 GitHub 查看留言'), entry.html_url, '', { appearance: 'icon' }));
           if (source === 'reviewComments') body.push(text([entry.path, Number.isInteger(entry.line || entry.original_line) ? t(`line ${entry.line || entry.original_line}`, `第 ${entry.line || entry.original_line} 行`) : '', entry.in_reply_to_id ? t(`Reply to #${entry.in_reply_to_id}`, `回复 #${entry.in_reply_to_id}`) : ''].filter(Boolean).join(' · '), 'monospaced'));
           if (entry.body) body.push(...commentBody(source, entry));
           else if (source === 'reviews') body.push(text(t('Review submitted without a message.', '已提交审查，没有附加留言。')));

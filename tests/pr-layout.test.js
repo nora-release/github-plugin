@@ -322,7 +322,7 @@ test('The conversation shares one avatar gutter while retaining complete message
   const nodes = flatten(content);
   assert.ok(nodes.some(value => value.type === 'markdown' && value.text === 'Keep every paragraph.\n\nIncluding the last one.'));
   assert.ok(nodes.some(value => value.text === 'Keep the real commit title'));
-  assert.ok(nodes.some(value => value.action?.includes('issuecomment-8')));
+  assert.ok(!nodes.some(value => value.action?.includes('issuecomment-8')), 'Comment cards do not repeat browser shortcuts');
   const composer = content.find(value => value.id === 'pr-comment-composer');
   assert.equal(composer.type, 'timelineItem');
   assert.equal(composer.children[0].text, 'viewer');

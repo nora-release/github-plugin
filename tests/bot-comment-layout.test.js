@@ -51,7 +51,7 @@ test('Long bot notifications expose a source heading and preserve every original
   assert.equal(authors.get(card.children[0]).account, entry.user);
   const nodes = flatten([card]);
   assert.ok(nodes.some(value => value.type === 'markdown' && value.text === '✅ Deploy Preview for *vitest-dev* ready!'));
-  assert.ok(nodes.some(value => value.appearance === 'icon' && value.action === 'pr-open:https%3A%2F%2Fgithub.com%2Fowner%2Frepo%2Fpull%2F1%23issuecomment-3'));
+  assert.ok(!nodes.some(value => value.action === `pr-open:${encodeURIComponent(entry.html_url)}`), 'Comment cards do not repeat browser shortcuts');
   const disclosure = collapsed(card);
   assert.ok(disclosure);
   assert.equal(originalBody(disclosure), botCommentBody);
@@ -95,10 +95,12 @@ test('Bot identities require a GitHub Bot type or valid bot login rather than bo
 
 test('Reviews and inline review comments retain full content even from bot authors', () => {
   for (const source of ['reviews', 'reviewComments']) {
-    const card = activity(model(source, comment(botCommentBody, undefined, { state: 'CHANGES_REQUESTED', path: 'src/main.ts', line: 42 })))[0];
+    const entry = comment(botCommentBody, undefined, { state: 'CHANGES_REQUESTED', path: 'src/main.ts', line: 42 });
+    const card = activity(model(source, entry))[0];
     assert.ok(!collapsed(card));
     assert.ok(flatten([card]).some(value => value.type === 'markdown' && value.text === botCommentBody));
-    assert.ok(flatten([card]).some(value => value.action?.startsWith('pr-open:')));
+    assert.ok(card.children[0].action?.startsWith('pr-open:'), 'The author profile remains available');
+    assert.ok(!flatten([card]).some(value => value.action === `pr-open:${encodeURIComponent(entry.html_url)}`));
     if (source === 'reviews') assert.ok(flatten([card]).some(value => value.text === 'Changes requested'));
     else assert.ok(flatten([card]).some(value => value.text?.includes('src/main.ts') && value.text.includes('line 42')));
   }
@@ -132,6 +134,7 @@ test('Empty comments, unhelpful summaries, and older hosts retain safe complete 
   const legacy = flatten(view({ supportsNativeTimeline: false }).nativeContent(model()));
   assert.ok(!legacy.some(value => value.type === 'timelineItem'));
   assert.ok(legacy.some(value => value.type === 'markdown' && value.text === botCommentBody));
+  assert.ok(!legacy.some(value => value.action === `pr-open:${encodeURIComponent(comment().html_url)}`));
 });
 
 test('Disclosures retain bodies larger than the former 6 KiB preview and preserve CRLF and entities exactly', () => {
@@ -161,7 +164,7 @@ test('Oversized bot content remains exact across native text pages without trunc
       parts.push(markdown[0].text);
     }
     assert.ok(!nodes.some(value => /Content shortened|View complete history/.test(value.text || '')));
-    assert.ok(nodes.some(value => value.action?.startsWith('pr-open:')), 'The optional source link stays available');
+    assert.ok(card.children[0].action?.startsWith('pr-open:'), 'The author profile stays available');
     assert.ok(flatten(content).some(value => value.type === 'textEditor' && value.value === current.comment.draft));
     assert.ok(flatten(content).length <= 200);
     assert.ok(Buffer.byteLength(JSON.stringify(content)) <= 185 * 1024);
