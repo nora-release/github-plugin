@@ -12,15 +12,17 @@ const pull = issue(1, 'The actual PR title', { repository_url: 'https://api.gith
   labels: [{ name: 'bug' }], milestone: { title: 'Next release', html_url: 'https://github.com/team/project/milestone/2' },
   created_at: '2026-10-15T00:00:00Z', author_association: 'MEMBER' });
 function currentHost(options = {}) {
-  const { repositoryData = {}, pullData = {}, ...hostOptions } = options;
+  const { repositoryData = {}, pullData = {}, graphqlRoute = null, ...hostOptions } = options;
   const currentPull = { ...pull, ...pullData };
   return fixture({ saved: connection, supportsDetailAside: true, ...hostOptions,
-    ownerAvatarRoute: async () => ({ status: 200, headers: { 'content-type': 'image/png' }, bodyBase64: image }), route: async url => {
+    ownerAvatarRoute: async () => ({ status: 200, headers: { 'content-type': 'image/png' }, bodyBase64: image }), route: async (url, args) => {
       if (url.pathname === '/user') return body({ login: 'viewer' });
       if (url.pathname === '/user/repos') return body([repo('team/project')]);
       if (url.pathname === '/search/issues') return searchBody([currentPull]);
       if (url.pathname === '/repos/team/project/pulls/1') return body(currentPull);
-      if (url.pathname === '/repos/team/project') return body({ ...repo('team/project'), permissions: { push: true }, allow_merge_commit: true, ...repositoryData });
+      if (url.pathname === '/repos/team/project') return body({ ...repo('team/project'), permissions: { push: true },
+        allow_merge_commit: true, allow_squash_merge: false, allow_rebase_merge: false, ...repositoryData });
+      if (url.pathname === '/graphql') return graphqlRoute ? graphqlRoute(url, args) : assert.fail('Complete REST settings must not request GraphQL.');
       if (url.pathname.endsWith('/check-runs')) return body({ check_runs: [{ id: 1, name: 'build', head_sha: sha, status: 'completed', conclusion: 'success' }] });
       if (url.pathname.endsWith('/status')) return body({ statuses: [] });
       if (url.pathname.endsWith('/actions/runs')) return body({ workflow_runs: [] });
@@ -129,6 +131,54 @@ test('The shipped SDK keeps blocked merge methods visible and offers refresh whi
     assert.ok(!nodes(page).some(node => node.action === 'pr-confirm-merge'));
     assert.ok(f.requests.every(request => !request.method || request.method === 'GET'));
   }
+});
+
+test('The actual toolbar shows GraphQL merge methods when REST omits settings and preserves an explicit REST false', async () => {
+  for (const explicitMerge of [undefined, false]) {
+    const f = currentHost({ repositoryData: { allow_merge_commit: explicitMerge, allow_squash_merge: undefined, allow_rebase_merge: undefined },
+      graphqlRoute: async (url, args) => {
+        assert.equal(args.method, 'POST');
+        const request = JSON.parse(args.body);
+        assert.match(request.query, /^query NoraMergeSettings\(/);
+        assert.doesNotMatch(request.query, /\bmutation\b/);
+        assert.deepEqual(request.variables, { owner: 'team', name: 'project' });
+        return body({ data: { repository: { nameWithOwner: 'TEAM/PROJECT', mergeCommitAllowed: true, squashMergeAllowed: true, rebaseMergeAllowed: true } } });
+      } });
+    const page = await open(f), menu = nodes(page.children[1].children[0]).find(node => node.id === 'pr-merge-menu');
+    const methods = menu.children.filter(node => node.action?.startsWith('pr-merge:'));
+    assert.deepEqual(Array.from(methods, node => node.action), explicitMerge === false
+      ? ['pr-merge:squash', 'pr-merge:rebase'] : ['pr-merge:merge', 'pr-merge:squash', 'pr-merge:rebase']);
+    assert.ok(methods.every(node => !node.disabled));
+    assert.equal(f.requests.filter(request => new URL(request.url).pathname === '/graphql').length, 1);
+    assert.ok(f.requests.every(request => request.method === 'GET' || request.method === 'POST' && new URL(request.url).pathname === '/graphql'));
+    assert.ok(!nodes(page).some(node => node.action === 'pr-confirm-merge'));
+    assert.equal(f.writes.length, 0);
+  }
+});
+
+test('Unknown GraphQL settings offer an accurate refresh action that restores merge choices and the comment draft', async () => {
+  let unavailable = true;
+  const f = currentHost({ repositoryData: { allow_merge_commit: undefined, allow_squash_merge: undefined, allow_rebase_merge: undefined },
+    graphqlRoute: async () => body(unavailable ? { errors: [{ message: 'Permission unavailable' }] }
+      : { data: { repository: { nameWithOwner: 'team/project', mergeCommitAllowed: true, squashMergeAllowed: true, rebaseMergeAllowed: true } } }) });
+  const page = await open(f), field = nodes(page).find(node => node.type === 'textEditor').id;
+  const menu = nodes(page.children[1].children[0]).find(node => node.id === 'pr-merge-menu');
+  const wording = nodes(menu).map(node => node.text || '').join('\n');
+  assert.match(wording, /Could not read repository merge settings.*Refresh/i);
+  assert.doesNotMatch(wording, /No merge method.*enabled/i);
+  assert.ok(menu.children.some(node => node.action === 'pr-refresh' && !node.disabled));
+  assert.ok(!menu.children.some(node => node.action?.startsWith('pr-merge:') && !node.disabled));
+  const draft = 'Preserve this reply while settings are refreshed.';
+  await f.render({ action: 'pr-tab:discussion', values: { [field]: draft } });
+  unavailable = false;
+  const refreshed = await f.renderReady({ action: 'pr-refresh' });
+  const restoredMenu = nodes(refreshed.children[1].children[0]).find(node => node.id === 'pr-merge-menu');
+  assert.deepEqual(Array.from(restoredMenu.children.filter(node => node.action?.startsWith('pr-merge:') && !node.disabled), node => node.action),
+    ['pr-merge:merge', 'pr-merge:squash', 'pr-merge:rebase']);
+  assert.equal(nodes(refreshed).find(node => node.type === 'textEditor').value, draft);
+  assert.equal(f.requests.filter(request => new URL(request.url).pathname === '/graphql').length, 2);
+  assert.ok(f.requests.every(request => request.method === 'GET' || request.method === 'POST' && new URL(request.url).pathname === '/graphql'));
+  assert.equal(f.writes.length, 0);
 });
 
 test('A host without the context capability keeps its previous discussion layout even with the new plugin', async () => {

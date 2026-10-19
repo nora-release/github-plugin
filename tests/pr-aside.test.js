@@ -183,10 +183,28 @@ test('The merge menu lists only explicitly enabled repository methods for single
       methods.map(method => `pr-merge:${method}`));
     if (!methods.length) assert.match(text([menu]), /No merge method.*enabled/i);
   }
-  current.sections.repository = section([], { data: { permissions: { push: true }, allow_merge_commit: 'true', allow_squash_merge: 1 } });
+  current.sections.repository = section([], { data: { permissions: { push: true }, allow_merge_commit: 'true', allow_squash_merge: 1 },
+    mergeSettingsError: 'Could not read repository merge settings. Refresh and try again.' });
   const unknownSettings = api.nativeToolbarActions(current)[0];
   assert.ok(!unknownSettings.children.some(node => node.action?.startsWith('pr-merge:')));
-  assert.match(text([unknownSettings]), /No merge method.*enabled/i);
+  assert.match(text([unknownSettings]), /merge settings.*Refresh/i);
+  assert.doesNotMatch(text([unknownSettings]), /No merge method.*enabled/i);
+  assert.ok(unknownSettings.children.some(node => node.action === 'pr-refresh'));
+});
+
+test('Unknown repository merge settings offer refresh and never mislabel missing fields as disabled methods', () => {
+  const api = view(), current = model();
+  current.item.mergeable = true; current.item.mergeable_state = 'clean';
+  for (const repositoryData of [{ permissions: { push: true } }, { permissions: { push: true }, allow_merge_commit: true, allow_squash_merge: false }]) {
+    current.sections.repository = section([], { data: repositoryData,
+      mergeSettingsError: 'Could not read repository merge settings. Refresh and try again.' });
+    const menu = api.nativeToolbarActions(current)[0];
+    assert.equal(menu.disabled, false);
+    assert.match(text([menu]), /Could not read repository merge settings.*Refresh/i);
+    assert.doesNotMatch(text([menu]), /No merge method.*enabled/i);
+    assert.ok(menu.children.some(node => node.action === 'pr-refresh' && !node.disabled));
+    assert.ok(menu.children.filter(node => node.action?.startsWith('pr-merge:')).every(node => node.disabled === true));
+  }
 });
 
 test('Blocked merge methods remain visible with a reason and unknown status offers refresh', () => {

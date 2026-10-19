@@ -102,7 +102,8 @@ function host(capability) {
       if (url.pathname === '/user/repos') return body([repo('team/project')]);
       if (url.pathname === '/search/issues') return searchBody([pull]);
       if (url.pathname === '/repos/team/project/pulls/1') return body(pull);
-      if (url.pathname === '/repos/team/project') return body({ ...repo('team/project'), permissions: { push: true }, allow_merge_commit: true });
+      if (url.pathname === '/repos/team/project') return body({ ...repo('team/project'), permissions: { push: true },
+        allow_merge_commit: true, allow_squash_merge: false, allow_rebase_merge: false });
       if (url.pathname.endsWith('/check-runs')) return body({ check_runs: [] });
       if (url.pathname.endsWith('/status')) return body({ statuses: [] });
       if (url.pathname.endsWith('/actions/runs')) return body({ workflow_runs: [] });

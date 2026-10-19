@@ -11,6 +11,10 @@ vm.runInContext(`${plugin.replace('(() => {', '').replace(/\}\)\(\);\s*$/, '')}\
 const head = 'a'.repeat(40), newerHead = 'b'.repeat(40);
 const pull = (number = 1, extra = {}) => issue(number, `Pull ${number}`, { pull_request: {}, html_url: `https://github.com/alice/project/pull/${number}`, repository: { full_name: 'alice/project' }, head: { sha: head, ref: 'feature' }, base: { ref: 'main' }, draft: false, mergeable: true, ...extra });
 const repository = extra => ({ ...repo(), permissions: { push: true }, allow_merge_commit: true, allow_squash_merge: true, allow_rebase_merge: false, ...extra });
+const repositoryWithoutMergeSettings = extra => repository({ allow_merge_commit: undefined, allow_squash_merge: undefined, allow_rebase_merge: undefined, ...extra });
+const graphqlMergeSettings = (changes = {}) => ({ data: { repository: {
+  nameWithOwner: 'alice/project', mergeCommitAllowed: true, squashMergeAllowed: true, rebaseMergeAllowed: true, ...changes,
+} } });
 const result = (data, headers = {}) => ({ data, headers });
 const defaultRead = path => {
   if (path === '/repos/alice/project') return result(repository());
@@ -23,16 +27,16 @@ const defaultRead = path => {
 const httpError = (message, status) => Object.assign(new Error(message), { status });
 function controller({ read = defaultRead, write = async () => assert.fail('Unexpected mutation') } = {}) {
   let selected = null;
-  const requests = [], writes = [], updates = [];
+  const requests = [], requestDetails = [], writes = [], updates = [];
   const api = scope.makePRDetails({
-    api: async path => { requests.push(path); return read(path); },
+    api: async (path, token, options) => { requests.push(path); requestDetails.push({ path, token, options }); return read(path, token, options); },
     write: async (path, method, body) => { writes.push({ path, method, body }); return write(path, method, body); },
     t: en => en, boundedText: (text, limit, suffix = '') => Buffer.byteLength(text) > limit ? Buffer.from(text).subarray(0, limit - Buffer.byteLength(suffix)).toString() + suffix : text,
     githubURL: url => { assert.match(url, /^https:\/\/github\.com\//); return url; },
     isCurrent: item => selected !== null && selected.repository.full_name === item.repository.full_name && selected.number === item.number,
     onUpdated: item => { selected = item; updates.push(item); },
   });
-  return { api, requests, writes, updates, setSelected: item => { selected = item; }, open: async (item = pull(), options) => { selected = item; return api.open(item, options); } };
+  return { api, requests, requestDetails, writes, updates, setSelected: item => { selected = item; }, open: async (item = pull(), options) => { selected = item; return api.open(item, options); } };
 }
 
 test('PR details load independent activity and latest-head CI; commits, files and jobs remain lazy', async () => {
@@ -40,6 +44,7 @@ test('PR details load independent activity and latest-head CI; commits, files an
   await f.open();
   assert.equal(f.api.current.tab, 'discussion');
   assert.equal(f.requests.length, 8);
+  assert.ok(!f.requests.includes('/graphql'), 'Complete REST merge settings do not need another request.');
   assert.ok(!f.requests.some(path => path.includes('/commits?') || path.includes('/files?') || path.includes('/jobs?')));
   for (const name of ['repository', 'reviews', 'comments', 'reviewComments', 'timeline', 'checks', 'statuses', 'workflows']) assert.equal(f.api.current.sections[name].loaded, true);
   assert.equal(f.api.current.sections.repository.data.permissions.push, true);
@@ -109,6 +114,158 @@ test('Initial section errors can retry independently, including repository permi
   assert.equal(f.api.current.sections.repository.data.permissions.push, true);
   assert.equal(f.api.current.sections.repository.error, '');
   assert.equal(f.api.current.sections.comments.loaded, true);
+});
+
+test('Missing REST merge settings are filled by a read-only GraphQL query without changing explicit REST flags', async () => {
+  for (const rest of [repositoryWithoutMergeSettings(), repositoryWithoutMergeSettings({ allow_merge_commit: false, allow_rebase_merge: false })]) {
+    const f = controller({ read: async (path, token, options) => {
+      if (path === '/repos/alice/project') return result(rest);
+      if (path !== '/graphql') return defaultRead(path);
+      assert.equal(token, undefined);
+      assert.equal(options.method, 'POST');
+      assert.match(options.body.query, /^query NoraMergeSettings\(/);
+      assert.doesNotMatch(options.body.query, /\bmutation\b/);
+      assert.equal(options.body.variables.owner, 'alice');
+      assert.equal(options.body.variables.name, 'project');
+      for (const field of ['nameWithOwner', 'mergeCommitAllowed', 'squashMergeAllowed', 'rebaseMergeAllowed']) assert.ok(options.body.query.includes(field));
+      return result(graphqlMergeSettings());
+    } });
+    await f.open();
+    const state = f.api.current.sections.repository;
+    assert.equal(state.loaded, true);
+    assert.equal(state.error, '');
+    assert.equal(state.mergeSettingsError || '', '');
+    assert.equal(state.data.allow_merge_commit, rest.allow_merge_commit === false ? false : true);
+    assert.equal(state.data.allow_squash_merge, true);
+    assert.equal(state.data.allow_rebase_merge, rest.allow_rebase_merge === false ? false : true);
+    assert.equal(state.data.permissions.push, true);
+    assert.equal(f.requests.filter(path => path === '/graphql').length, 1);
+    assert.equal(f.writes.length, 0);
+  }
+});
+
+test('Read-only and archived repositories do not request merge settings that cannot be used', async () => {
+  for (const rest of [repositoryWithoutMergeSettings({ permissions: { push: false } }),
+    repositoryWithoutMergeSettings({ permissions: {} }), repositoryWithoutMergeSettings({ archived: true })]) {
+    const f = controller({ read: async path => {
+      if (path === '/graphql') return assert.fail('An unmergeable repository does not need a settings query.');
+      return path === '/repos/alice/project' ? result(rest) : defaultRead(path);
+    } });
+    await f.open();
+    const state = f.api.current.sections.repository;
+    assert.equal(state.loaded, true);
+    assert.equal(state.error, '');
+    assert.equal(state.mergeSettingsError || '', '');
+    assert.equal(state.data, rest);
+    assert.ok(!f.requests.includes('/graphql'));
+    f.api.prepareMerge('merge');
+    assert.equal(f.api.current.merge.pending, null);
+    assert.match(f.api.current.merge.error, rest.archived ? /archived/i : /Write access/i);
+    assert.doesNotMatch(f.api.current.merge.error, /merge settings/i);
+    assert.equal(f.writes.length, 0);
+  }
+});
+
+test('Invalid or unavailable GraphQL settings remain unknown and a refresh can recover them without losing a draft', async () => {
+  const invalid = [
+    ['GraphQL errors', { ...graphqlMergeSettings(), errors: [{ message: 'No permission' }] }],
+    ['Malformed errors', { ...graphqlMergeSettings(), errors: { message: 'Not an array' } }],
+    ['Wrong setting type', graphqlMergeSettings({ rebaseMergeAllowed: 'true' })],
+    ['Missing setting', graphqlMergeSettings({ squashMergeAllowed: undefined })],
+    ['Wrong repository', graphqlMergeSettings({ nameWithOwner: 'outside/project' })],
+    ['Missing repository', { data: { repository: null } }],
+    ['Network failure', new Error('GraphQL is unavailable')],
+  ];
+  for (const [name, response] of invalid) {
+    let unavailable = true;
+    const f = controller({ read: async path => {
+      if (path === '/repos/alice/project') return result(repositoryWithoutMergeSettings());
+      if (path !== '/graphql') return defaultRead(path);
+      if (unavailable && response instanceof Error) throw response;
+      return result(unavailable ? response : graphqlMergeSettings());
+    } });
+    await f.open();
+    const state = f.api.current.sections.repository;
+    assert.equal(state.loaded, true, name);
+    assert.equal(state.error, '', name);
+    assert.equal(state.data.permissions.push, true, name);
+    assert.match(state.mergeSettingsError, /Could not read repository merge settings.*Refresh/i, name);
+    for (const field of ['allow_merge_commit', 'allow_squash_merge', 'allow_rebase_merge']) assert.equal(state.data[field], undefined, name);
+    f.api.setCommentDraft('Keep my unfinished reply.');
+    f.api.prepareMerge('merge');
+    assert.equal(f.api.current.merge.pending, null, name);
+    assert.match(f.api.current.merge.error, /merge settings.*Refresh/i, name);
+    assert.doesNotMatch(f.api.current.merge.error, /not enabled/i, name);
+    unavailable = false;
+    await f.api.refresh();
+    assert.equal(f.api.current.sections.repository.mergeSettingsError || '', '', name);
+    assert.equal(f.api.current.sections.repository.data.allow_merge_commit, true, name);
+    assert.equal(f.api.current.comment.draft, 'Keep my unfinished reply.', name);
+    f.api.prepareMerge('merge');
+    assert.equal(f.api.current.merge.pending?.method, 'merge', name);
+    assert.equal(f.writes.length, 0, name);
+  }
+});
+
+test('Confirmation rereads missing settings through GraphQL and blocks a method revoked since preparation', async () => {
+  for (const revoked of [false, true]) {
+    let graphqlReads = 0;
+    const f = controller({ read: async path => {
+      if (path === '/repos/alice/project') return result(repositoryWithoutMergeSettings());
+      if (path === '/graphql') return result(graphqlMergeSettings({ rebaseMergeAllowed: !(++graphqlReads > 1 && revoked) }));
+      return defaultRead(path);
+    }, write: async () => ({ status: 200, data: { merged: true } }) });
+    await f.open();
+    f.api.prepareMerge('rebase');
+    assert.equal(f.api.current.merge.pending?.method, 'rebase');
+    await f.api.confirmMerge({ authorized: true });
+    assert.equal(graphqlReads, 2);
+    assert.equal(f.writes.length, revoked ? 0 : 1);
+    if (revoked) {
+      assert.equal(f.api.current.merge.pending, null);
+      assert.match(f.api.current.merge.error, /method is not enabled/i);
+      assert.ok(!f.api.current.item.merged);
+    } else assert.equal(f.api.current.item.merged, true);
+  }
+});
+
+test('A failed confirmation settings fallback clears the pending merge without a mutation', async () => {
+  let graphqlReads = 0;
+  const f = controller({ read: async path => {
+    if (path === '/repos/alice/project') return result(repositoryWithoutMergeSettings());
+    if (path === '/graphql') return result(++graphqlReads === 1 ? graphqlMergeSettings() : { errors: [{ message: 'Permission revoked' }] });
+    return defaultRead(path);
+  } });
+  await f.open();
+  f.api.prepareMerge('squash');
+  assert.equal(f.api.current.merge.pending?.method, 'squash');
+  await f.api.confirmMerge({ authorized: true });
+  assert.equal(graphqlReads, 2);
+  assert.equal(f.api.current.merge.pending, null);
+  assert.match(f.api.current.merge.error, /merge settings.*Refresh/i);
+  assert.equal(f.writes.length, 0);
+});
+
+test('Late GraphQL settings from an old PR cannot replace the new PR repository settings', async () => {
+  const started = deferred(), release = deferred();
+  let repositoryReads = 0;
+  const f = controller({ read: async path => {
+    if (path === '/repos/alice/project') return result(++repositoryReads === 1 ? repositoryWithoutMergeSettings() : repository());
+    if (path === '/graphql') { started.resolve(); await release.promise; return result(graphqlMergeSettings()); }
+    return defaultRead(path);
+  } });
+  const old = f.open(pull(1));
+  await started.promise;
+  await f.open(pull(2));
+  const current = f.api.current;
+  assert.equal(current.sections.repository.data.allow_rebase_merge, false);
+  release.resolve();
+  await old;
+  assert.equal(f.api.current, current);
+  assert.equal(f.api.current.number, 2);
+  assert.equal(f.api.current.sections.repository.data.allow_rebase_merge, false);
+  assert.equal(f.api.current.sections.repository.mergeSettingsError || '', '');
+  assert.equal(f.writes.length, 0);
 });
 
 test('Non-discussion lists retain their existing cap and explicit complete-history notice', async () => {
@@ -373,7 +530,7 @@ test('Concurrent comment events and close/reopen cannot dispatch duplicate write
 test('Merge preparation obeys repository methods, push permission, draft and conflict state', async () => {
   for (const [repoData, item, method, error] of [
     [repository({ permissions: {} }), pull(), 'merge', /Write access/],
-    [repository({ allow_squash_merge: undefined }), pull(), 'squash', /not enabled/],
+    [repository({ allow_squash_merge: false }), pull(), 'squash', /not enabled/],
     [repository(), pull(1, { draft: true }), 'merge', /draft/],
     [repository(), pull(1, { state: 'closed' }), 'merge', /closed/],
     [repository(), pull(1, { mergeable: false }), 'merge', /conflicts/],

@@ -19,6 +19,31 @@
     }
     const active = (record, generation = record.generation) => model === record && generation === revision && isCurrent(record.item);
     const failure = error => error?.message || t('GitHub could not be reached. Try again.', '无法连接 GitHub，请重试。');
+    const mergeSettingsFields = [
+      ['allow_merge_commit', 'mergeCommitAllowed'], ['allow_squash_merge', 'squashMergeAllowed'], ['allow_rebase_merge', 'rebaseMergeAllowed'],
+    ];
+    const mergeSettingsFailure = t('Could not read repository merge settings. Refresh and try again.', '无法读取仓库合并设置，请刷新后重试。');
+    async function readRepository(repo, canApply) {
+      const result = await api(`/repos/${repo}`), data = result.data;
+      if (!canApply()) throw invalid();
+      if (!data || typeof data !== 'object' || Array.isArray(data) || typeof data.full_name !== 'string' || data.full_name.toLowerCase() !== repo.toLowerCase()) throw invalid();
+      if (data.permissions?.push !== true || data.archived === true || mergeSettingsFields.every(([field]) => typeof data[field] === 'boolean')) return { ...result, mergeSettingsError: '' };
+      try {
+        const [owner, name] = repo.split('/');
+        const response = await api('/graphql', undefined, { method: 'POST', expectedStatuses: [200], body: {
+          query: 'query NoraMergeSettings($owner: String!, $name: String!) { repository(owner: $owner, name: $name) { nameWithOwner mergeCommitAllowed squashMergeAllowed rebaseMergeAllowed } }',
+          variables: { owner, name },
+        } });
+        const payload = response.data, settings = payload?.data?.repository;
+        if (!payload || typeof payload !== 'object' || Array.isArray(payload) ||
+            payload.errors !== undefined && (!Array.isArray(payload.errors) || payload.errors.length) ||
+            typeof settings?.nameWithOwner !== 'string' || settings.nameWithOwner.toLowerCase() !== repo.toLowerCase() ||
+            !mergeSettingsFields.every(([, field]) => typeof settings[field] === 'boolean')) throw invalid();
+        const complete = { ...data };
+        for (const [field, graphQLField] of mergeSettingsFields) if (typeof complete[field] !== 'boolean') complete[field] = settings[graphQLField];
+        return { ...result, data: complete, mergeSettingsError: '' };
+      } catch { return { ...result, mergeSettingsError: mergeSettingsFailure }; }
+    }
     const pathFor = (record, name, page = 1) => {
       const base = `/repos/${record.repo}`, pull = `${base}/pulls/${record.number}`, issue = `${base}/issues/${record.number}`;
       const paths = { repository: base, comments: `${issue}/comments`, reviews: `${pull}/reviews`, reviewComments: `${pull}/comments`, timeline: `${issue}/timeline`, checks: `${base}/commits/${record.headSHA}/check-runs`, statuses: `${base}/commits/${record.headSHA}/status`, workflows: `${base}/actions/runs`, commits: `${pull}/commits`, files: `${pull}/files` };
@@ -63,13 +88,13 @@
       const valid = () => active(record) && target.operation === operation && (!requiresHead || record.headSHA === head);
       try {
         const path = name === 'jobs' ? `/repos/${record.repo}/actions/runs/${runID}/jobs?per_page=${pageSize}&page=${requestedPage}` : pathFor(record, name, requestedPage);
-        const result = await api(path);
+        const result = name === 'repository' ? await readRepository(record.repo, valid) : await api(path);
         if (!valid()) return;
         if (name === 'repository' && result.data?.full_name?.toLowerCase() !== record.repo.toLowerCase()) throw invalid();
         const incoming = responseItems(name, result.data).filter(item => !requiresHead || !item.head_sha || item.head_sha.toLowerCase() === head);
         const items = deduplicate(name, [...(append ? target.items : []), ...incoming]);
         target.items = completeHistorySources.has(name) ? items : items.slice(0, maximumRows);
-        if (name === 'repository') target.data = result.data;
+        if (name === 'repository') { target.data = result.data; target.mergeSettingsError = result.mergeSettingsError; }
         if (name === 'statuses') target.state = result.data.state;
         target.loaded = true;
         target.nextPage = nextPage(result.headers, requestedPage);
@@ -195,6 +220,7 @@
       if (!mergeBase(record.item, record.repo)) return t('The target branch is unavailable. Refresh this PR.', '无法获取目标分支，请刷新这条 PR。');
       if (repositoryData?.archived === true) return t('An archived repository cannot be changed.', '仓库已归档，无法修改。');
       if (!repositoryData || repositoryData.permissions?.push !== true) return t('Write access to this repository is required to merge.', '合并需要此仓库的写入权限。');
+      if (record.sections.repository.mergeSettingsError) return record.sections.repository.mergeSettingsError;
       const setting = { merge: 'allow_merge_commit', squash: 'allow_squash_merge', rebase: 'allow_rebase_merge' }[method];
       if (!setting || repositoryData[setting] !== true) return t('This merge method is not enabled for this repository.', '此仓库未启用该合并方式。');
       if (record.item.mergeable === false || record.item.mergeable_state === 'dirty') return t('This PR has conflicts. Resolve them before merging.', '这条 PR 存在冲突，请解决后再合并。');
@@ -238,10 +264,11 @@
           record.sections.checks = section(); record.sections.statuses = section(); record.sections.workflows = section(); record.jobsByRun = {};
           merge.pending = null; merge.error = staleNotice; return;
         }
-        const repositoryResult = await api(`/repos/${record.repo}`);
+        const repositoryResult = await readRepository(record.repo, valid);
         if (!valid()) return;
         if (repositoryResult.data?.full_name?.toLowerCase() !== record.repo.toLowerCase()) throw invalid();
         record.sections.repository.data = repositoryResult.data;
+        record.sections.repository.mergeSettingsError = repositoryResult.mergeSettingsError;
         record.item = fresh; onUpdated(fresh);
         const problem = mergeProblem({ ...record, item: fresh }, pending.method, repositoryResult.data);
         if (problem) { merge.pending = null; merge.error = problem; return; }
@@ -859,7 +886,10 @@
     function mergeAvailability(model) {
       const item = model.item || {}, repo = repository(model);
       let problem = null;
-      if (item.mergeable === false || item.mergeable_state === 'dirty') problem = {
+      if (section(model, 'repository').mergeSettingsError) problem = {
+        text: section(model, 'repository').mergeSettingsError, tone: 'warning', refresh: true, settings: true,
+      };
+      else if (item.mergeable === false || item.mergeable_state === 'dirty') problem = {
         text: t('Resolve merge conflicts before merging.', '解决合并冲突后才能合并。'), tone: 'danger', symbol: 'exclamationmark.triangle',
       };
       else if (item.mergeable_state === 'blocked' || item.mergeable_state === 'behind') problem = {
@@ -915,8 +945,11 @@
       const children = [];
       if (problem) children.push(text(problem.text, 'caption', problem.tone), node('divider'));
       children.push(...methods.map(([method, , label]) => button(label, `pr-merge:${method}`, { disabled: busy || !!problem })));
-      if (!methods.length) children.push(text(noMergeMethods));
-      if (problem?.refresh) children.push(node('divider'), button(t('Refresh status', '刷新状态'), 'pr-refresh', { symbol: 'arrow.clockwise', disabled: busy }));
+      if (!methods.length && !problem?.settings) children.push(text(noMergeMethods));
+      if (problem?.refresh) {
+        if (children.at(-1)?.type !== 'divider') children.push(node('divider'));
+        children.push(button(t('Refresh status', '刷新状态'), 'pr-refresh', { symbol: 'arrow.clockwise', disabled: busy }));
+      }
       return [node('menu', { id: 'pr-merge-menu', text: t('Merge', '合并'), symbol: 'chevron.down', disabled: busy }, children)];
     }
     const nativeRow = (title, subtitle = '', properties = {}, children = []) => {

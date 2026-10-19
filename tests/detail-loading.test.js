@@ -14,7 +14,8 @@ function currentHost({ items = [pull(1), pull(2)], detail = async number => body
     if (url.pathname === '/user/repos') return body([repo()]);
     if (url.pathname === '/search/issues') return searchBody(items);
     if (/\/pulls\/\d+$/.test(url.pathname)) return detail(Number(url.pathname.split('/').at(-1)));
-    if (url.pathname === '/repos/alice/project') return body({ ...repo(), permissions: { push: true } });
+    if (url.pathname === '/repos/alice/project') return body({ ...repo(), permissions: { push: true },
+      allow_merge_commit: true, allow_squash_merge: true, allow_rebase_merge: false });
     if (url.pathname.endsWith('/check-runs')) return body({ check_runs: [{ id: 11, head_sha: head, conclusion: 'success' }] });
     if (url.pathname.endsWith('/status')) return body({ statuses: [] });
     if (url.pathname.endsWith('/actions/runs')) return body({ workflow_runs: [] });
