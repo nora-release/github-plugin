@@ -18,10 +18,7 @@ public struct GitHubPanel: View {
                 HSplitView {
                     if service.sidebarVisible {
                         sidebar.frame(minWidth: 210, idealWidth: CGFloat(service.sidebarWidth), maxWidth: 340)
-                            .background {
-                                GeometryReader { proxy in Color.clear.preference(key: GitHubSidebarWidthKey.self, value: proxy.size.width) }
-                            }
-                            .onPreferenceChange(GitHubSidebarWidthKey.self) { width in
+                            .onGeometryChange(for: CGFloat.self, of: { $0.size.width }) { width in
                                 guard width.isFinite, abs(Double(width) - service.sidebarWidth) > 0.5 else { return }
                                 service.sidebarWidth = Double(width)
                                 Task { await service.onPresentationChange?() }
@@ -84,22 +81,16 @@ public struct GitHubPanel: View {
 
     private var sidebar: some View {
         VStack(spacing: 0) {
-            Menu {
+            GitHubAccountHeader(login: service.user?.login ?? "GitHub") {
+                GitHubAvatar(person: service.user ?? .null, size: 24)
+            } actions: {
                 if let user = service.user { Text("@" + user.login) }
                 Button(GHL("Manage repository access")) { Task { await service.manageAccess() } }
                 Button(GHL("Refresh")) { Task { await service.refreshFeed() } }
                 Button(GHL("Reconnect Account")) { showsConnection = true }
                 Divider()
                 Button(GHL("Disconnect"), role: .destructive) { Task { await service.disconnect() } }
-            } label: {
-                HStack(spacing: 9) {
-                    GitHubAvatar(person: service.user ?? .null, size: 24)
-                    Text(service.user?.login ?? "GitHub").fontWeight(.semibold).lineLimit(1)
-                    Spacer()
-                    Image(systemName: "chevron.down").font(.system(size: 10)).foregroundStyle(.secondary)
-                }.padding(.horizontal, 12).frame(height: 48).contentShape(Rectangle())
             }
-            .menuStyle(.borderlessButton).menuIndicator(.hidden)
             VStack(spacing: 5) {
                 navigation(.issues, title: "Issues", icon: .issue)
                 navigation(.pullRequests, title: "PR", icon: .open)
@@ -241,9 +232,4 @@ private struct GitHubItemRow: View {
         .background(selected ? Color.primary.opacity(0.09) : .clear, in: RoundedRectangle(cornerRadius: 7))
         .contentShape(RoundedRectangle(cornerRadius: 7)).help(item.title)
     }
-}
-
-private struct GitHubSidebarWidthKey: PreferenceKey {
-    static var defaultValue: CGFloat { 268 }
-    static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) { value = nextValue() }
 }
