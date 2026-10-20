@@ -1,11 +1,9 @@
 {
-  "schemaVersion": 2,
-  "runtime": "script",
-  "entryPoint": "plugin.js",
+  "schemaVersion": 1,
   "id": "com.nora.github",
   "name": "GitHub",
   "iconPath": "assets/github.svg",
-  "version": "0.10.31",
+  "version": "0.11.0",
   "summary": "Connect GitHub to view PR discussions, reviews, CI/CD checks, commits, and changes; comment and merge from native Nora views.",
   "publisher": "Nora",
   "apiVersion": 1,
@@ -24,7 +22,7 @@
     {
       "id": "com.nora.github.panel",
       "title": "GitHub",
-      "systemImage": "chevron.left.forwardslash.chevron.right"
+      "systemImage": "arrow.triangle.pull"
     }
   ],
   "commands": [
@@ -49,5 +47,6 @@
       "inputSchemaJSON": "{\"type\":\"object\",\"properties\":{\"repository\":{\"type\":\"string\"},\"state\":{\"enum\":[\"open\",\"closed\",\"all\"]},\"page\":{\"type\":\"integer\",\"minimum\":1}},\"required\":[\"repository\"]}",
       "readOnly": true
     }
-  ]
+  ],
+  "extensionBundleIdentifier": "com.nora.github.extension"
 }

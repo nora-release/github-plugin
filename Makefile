@@ -1,16 +1,17 @@
 .DEFAULT_GOAL := build
-PLUGIN_TAG ?= v$(shell node -p "require('./nora-plugin.json').version")
+SWIFT ?= swift
+PLUGIN_TAG ?= v$(shell python3 -c "import json; print(json.load(open('nora-plugin.json'))['version'])")
 .PHONY: install build test package
 
 install:
-	pnpm install
+	$(SWIFT) package resolve
 
 build:
-	node --check plugin.js
-	node node_modules/@nora/plugin-kit/scripts/plugin-marketplace.mjs validate-manifest --manifest nora-plugin.json
+	bash script/build-app.sh
 
 test:
-	node --test tests/*.test.js
+	$(SWIFT) test
 
 package: build
-	node node_modules/@nora/plugin-kit/scripts/plugin-marketplace.mjs package --config plugin-release.json --output dist --tag "$(PLUGIN_TAG)"
+	mkdir -p dist
+	ditto -c -k --keepParent .build/NoraGitHub.app "dist/com.nora.github-$(PLUGIN_TAG)-macos.zip"
