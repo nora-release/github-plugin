@@ -30,6 +30,7 @@ public struct GitHubPanel: View {
         }
         .font(.system(size: 13))
         .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .background(Color(nsColor: .textBackgroundColor))
         .task { await service.restore() }
         .onAppear {
             service.onUIAction = { action in
@@ -185,8 +186,10 @@ public struct GitHubPanel: View {
                 }
             }
             .padding(8)
+            .frame(maxWidth: .infinity, alignment: .topLeading)
+            .transaction { $0.animation = nil }
             .id(service.kind)
-            .transition(.opacity.combined(with: .offset(y: 5)))
+            .transition(.opacity)
         }
         .animation(reduceMotion ? nil : .easeInOut(duration: 0.18), value: service.kind)
         .accessibilityIdentifier("github.items")

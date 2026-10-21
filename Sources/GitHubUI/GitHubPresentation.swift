@@ -92,6 +92,7 @@ struct GitHubChangeCount: View {
 struct GitHubSkeleton: View {
     var rows = 6
     var sidebar = false
+    var inset: CGFloat?
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @State private var glowing = false
     var body: some View {
@@ -101,15 +102,21 @@ struct GitHubSkeleton: View {
                     Circle().fill(.quaternary).frame(width: sidebar ? 24 : 30, height: sidebar ? 24 : 30)
                     VStack(alignment: .leading, spacing: 8) {
                         RoundedRectangle(cornerRadius: 3).fill(.quaternary).frame(height: 10)
-                        RoundedRectangle(cornerRadius: 3).fill(.quaternary).frame(width: sidebar ? 100 : CGFloat(170 + index % 3 * 70), height: 8)
+                        RoundedRectangle(cornerRadius: 3).fill(.quaternary)
+                            .frame(maxWidth: sidebar ? 100 : CGFloat(170 + index % 3 * 70))
+                            .frame(height: 8).frame(maxWidth: .infinity, alignment: .leading)
                         if !sidebar { RoundedRectangle(cornerRadius: 3).fill(.quaternary).frame(height: 50) }
                     }
                 }
+                .frame(maxWidth: .infinity, alignment: .leading)
             }
         }
-        .padding(sidebar ? 12 : 24)
-        .opacity(glowing ? 0.8 : 0.4)
-        .animation(reduceMotion ? nil : .easeInOut(duration: 1).repeatForever(autoreverses: true), value: glowing)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(inset ?? (sidebar ? 12 : 24))
+        .transaction { $0.animation = nil }
+        .animation(reduceMotion ? nil : .easeInOut(duration: 1).repeatForever(autoreverses: true)) { content in
+            content.opacity(reduceMotion ? 0.6 : glowing ? 0.8 : 0.4)
+        }
         .onAppear { glowing = true }
         .accessibilityElement(children: .ignore).accessibilityLabel(GHL("Loading GitHub content"))
     }

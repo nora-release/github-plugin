@@ -25,20 +25,28 @@ struct GitHubItemDetailView: View {
     var body: some View {
         VStack(spacing: 0) {
             tabs.padding(.top, 12).padding(.horizontal, 24)
-            if service.isLoadingDetail { GitHubSkeleton(rows: 4).frame(maxHeight: .infinity, alignment: .top) }
-            else if let error = service.detailError {
-                VStack(spacing: 12) {
-                    Text(error).foregroundStyle(.secondary).textSelection(.enabled)
-                    Button(GHL("Retry")) { Task { await service.selectItem(item) } }
-                }.padding(32).frame(maxWidth: .infinity, maxHeight: .infinity)
-            } else {
-                switch tab {
-                case .discussion: discussion
-                case .commits: commitList
-                case .checks: GitHubChecksView(service: service)
-                case .files: GitHubFilesView(service: service)
+            Group {
+                if service.isLoadingDetail {
+                    GitHubDetailColumns {
+                        GitHubSkeleton(rows: 4, inset: 0)
+                    } aside: {
+                        GitHubItemAside(item: item, reviews: [])
+                    }
+                } else if let error = service.detailError {
+                    VStack(spacing: 12) {
+                        Text(error).foregroundStyle(.secondary).textSelection(.enabled)
+                        Button(GHL("Retry")) { Task { await service.selectItem(item) } }
+                    }.padding(32).frame(maxWidth: .infinity, maxHeight: .infinity)
+                } else {
+                    switch tab {
+                    case .discussion: discussion
+                    case .commits: commitList
+                    case .checks: GitHubChecksView(service: service)
+                    case .files: GitHubFilesView(service: service)
+                    }
                 }
             }
+            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
         }
         .task(id: tab) {
             switch tab {
@@ -95,29 +103,24 @@ struct GitHubItemDetailView: View {
         }
     }
     private var discussion: some View {
-        GeometryReader { geometry in
-            ScrollView {
-                HStack(alignment: .top, spacing: 24) {
-                    VStack(alignment: .leading, spacing: 12) {
-                        GitHubDiscussionCard(value: item, bodyText: item["body"].text, isDescription: true)
-                        ForEach(conversationGroups) { group in
-                            if group.isCollection {
-                                commitGroup(group)
-                            } else if let entry = group.entries.first {
-                                conversationEntry(entry)
-                            }
-                        }
-                        discussionLoading
-                        GitHubCommentComposer(service: service, draft: Binding(
-                            get: { drafts[item.itemKey] ?? "" },
-                            set: { drafts[item.itemKey] = $0 }
-                        ))
-                    }.frame(maxWidth: .infinity, alignment: .leading)
-                    if geometry.size.width >= 820 {
-                        GitHubItemAside(item: item, reviews: service.sections[.reviews]?.items ?? []).frame(width: 210)
+        GitHubDetailColumns {
+            VStack(alignment: .leading, spacing: 12) {
+                GitHubDiscussionCard(value: item, bodyText: item["body"].text, isDescription: true)
+                ForEach(conversationGroups) { group in
+                    if group.isCollection {
+                        commitGroup(group)
+                    } else if let entry = group.entries.first {
+                        conversationEntry(entry)
                     }
-                }.padding(24).padding(.top, -6)
+                }
+                discussionLoading
+                GitHubCommentComposer(service: service, draft: Binding(
+                    get: { drafts[item.itemKey] ?? "" },
+                    set: { drafts[item.itemKey] = $0 }
+                ))
             }
+        } aside: {
+            GitHubItemAside(item: item, reviews: service.sections[.reviews]?.items ?? [])
         }
     }
     @ViewBuilder private var discussionLoading: some View {
@@ -187,6 +190,24 @@ struct GitHubItemDetailView: View {
                 }
                 GitHubSectionError(service: service, section: .commits)
             }.padding(24)
+        }
+    }
+}
+
+private struct GitHubDetailColumns<Content: View, Aside: View>: View {
+    @ViewBuilder let content: Content
+    @ViewBuilder let aside: Aside
+
+    var body: some View {
+        GeometryReader { geometry in
+            ScrollView {
+                HStack(alignment: .top, spacing: 24) {
+                    content.frame(maxWidth: .infinity, alignment: .leading)
+                    if geometry.size.width >= 820 { aside.frame(width: 210) }
+                }
+                .padding(.horizontal, 24).padding(.top, 18).padding(.bottom, 24)
+                .frame(maxWidth: .infinity, alignment: .topLeading)
+            }
         }
     }
 }
