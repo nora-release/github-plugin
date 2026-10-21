@@ -41,6 +41,7 @@ struct GitHubSidebarLayoutTests {
         #expect(listFrame.minY >= 150 && listFrame.minY < 240)
         #expect(abs(service.sidebarWidth - Double(sidebar.frame.width)) < 1)
         #expect(listFrame.height > host.frame.height / 2)
+        try expectSidebarMaterial(in: sidebar)
         let initialWidth = sidebar.frame.width
         split.setPosition(initialWidth > 260 ? 224 : 320, ofDividerAt: 0)
         for _ in 0 ..< 8 {
@@ -49,6 +50,23 @@ struct GitHubSidebarLayoutTests {
         }
         #expect(abs(sidebar.frame.width - initialWidth) > 10)
         #expect(abs(service.sidebarWidth - Double(sidebar.frame.width)) < 1)
+        try expectSidebarMaterial(in: sidebar)
+    }
+
+    private func expectSidebarMaterial(in sidebar: NSView) throws {
+        let materials = descendants(of: sidebar).compactMap { $0 as? NSVisualEffectView }
+            .filter { $0.material == .sidebar }
+        #expect(materials.count == 1)
+        let material = try #require(materials.first)
+        let frame = sidebar.convert(material.bounds, from: material)
+        #expect(material.blendingMode == .behindWindow)
+        #expect(material.state == .followsWindowActiveState)
+        #expect(!material.isHidden)
+        #expect(material.alphaValue == 1)
+        #expect(abs(frame.minX - sidebar.bounds.minX) < 0.5)
+        #expect(abs(frame.minY - sidebar.bounds.minY) < 0.5)
+        #expect(abs(frame.width - sidebar.bounds.width) < 0.5)
+        #expect(abs(frame.height - sidebar.bounds.height) < 0.5)
     }
 
     private func descendants(of view: NSView) -> [NSView] {

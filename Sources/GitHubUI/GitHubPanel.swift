@@ -25,12 +25,12 @@ public struct GitHubPanel: View {
                             }
                     }
                     main.frame(minWidth: 340, maxWidth: .infinity, maxHeight: .infinity)
+                        .background(GitHubPanelStyle.background)
                 }
             }
         }
         .font(.system(size: 13))
         .frame(maxWidth: .infinity, maxHeight: .infinity)
-        .background(Color(nsColor: .textBackgroundColor))
         .task { await service.restore() }
         .onAppear {
             service.onUIAction = { action in
@@ -78,6 +78,7 @@ public struct GitHubPanel: View {
                 .buttonStyle(.borderedProminent).controlSize(.large)
             if let error = service.error { Text(error).foregroundStyle(.red).textSelection(.enabled) }
         }.padding(32).frame(maxWidth: .infinity, maxHeight: .infinity)
+            .background(GitHubPanelStyle.background)
     }
 
     private var sidebar: some View {
@@ -122,7 +123,7 @@ public struct GitHubPanel: View {
             Divider().padding(.horizontal, 8)
             itemList
         }
-        .background(Color.primary.opacity(0.018))
+        .background { GitHubSidebarBackground() }
     }
 
     private func navigation(_ kind: GitHubKind, title: String, icon: GitHubIconKind) -> some View {
